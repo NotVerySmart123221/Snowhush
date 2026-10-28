@@ -1,0 +1,19 @@
+[package]
+name = "snowhush-wayland"
+version = "0.5.6"
+edition = "2024"
+
+[dependencies]
+snowhush = { path = "../windows" }
+smithay-client-toolkit = { version = "0.21", features = ["system"] }
+wayland-client = { version = "0.31", features = ["system"] }
+raw-window-handle = "0.6"
+bytemuck = { version = "1.21", features = ["derive"] }
+libc = "0.2"
+pollster = "0.4"
+wgpu = "24"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+calloop = "0.14"
+log = "0.4"
+env_logger = "0.11"

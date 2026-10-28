@@ -231,6 +231,7 @@ pub struct SnowSimulation {
     snowfall: Snowfall,
     density: f32,
     pub thaws: bool,
+    pub thaw_rate_multiplier: f32,
     pub accumulates: bool,
     /// Side edges, left and right, with no display past them: a window slid past one leaves its snow heaped against the edge.
     pub walls: (bool, bool),
@@ -264,6 +265,7 @@ impl SnowSimulation {
             snowfall,
             density: 1.0,
             thaws: false,
+            thaw_rate_multiplier: 1.0,
             accumulates: true,
             walls: (false, false),
             snowfall_held: false,
@@ -847,6 +849,149 @@ impl SnowSimulation {
         }
     }
 
+    /// Sweeps snow off window ledges in the direction of workspace transition,
+    /// bursting it into powder and clouds, and accelerating airborne flakes.
+    pub fn sweep_window_ledges(&mut self, direction: f32) {
+        let dir = if direction < 0.0 { -1.0 } else { 1.0 };
+        for li in 1..self.layers.len() {
+            let layer = &mut self.layers[li];
+            let mut dust = 0.0;
+            for i in 0..layer.count() {
+                let h = layer.heights[i];
+                if h <= 0.05 {
+                    continue;
+                }
+                let x = layer.center_x(i);
+                let surface = layer.surface(i);
+                dust += h * layer.column_width;
+                while dust >= 3.0 {
+                    self.air.lift(V2::new(x, surface), dir);
+                    dust -= 3.0;
+                }
+                layer.set(i, 0.0);
+            }
+        }
+        for flake in &mut self.air.flakes {
+            let random = &mut self.air.random;
+            flake.velocity.x += dir * random.range(500.0, 1100.0);
+            flake.velocity.y += random.range(40.0, 150.0);
+        }
+        self.air.heights_changed = true;
+    }
+
+    /// Sweeps snow off window ledges AND the ground.
+    pub fn sweep_all(&mut self, direction: f32) {
+        let dir = if direction < 0.0 { -1.0 } else { 1.0 };
+        self.sweep_window_ledges(dir);
+        let ground = &mut self.layers[0];
+        let mut dust = 0.0;
+        for i in 0..ground.count() {
+            let h = ground.heights[i];
+            if h <= 0.05 {
+                continue;
+            }
+            let x = ground.center_x(i);
+            let surface = ground.surface(i);
+            dust += h * ground.column_width;
+            while dust >= 4.0 {
+                self.air.lift(V2::new(x, surface), dir);
+                dust -= 4.0;
+            }
+            ground.set(i, 0.0);
+        }
+        self.air.heights_changed = true;
+    }
+
+    /// Bursts the snow on a window in all directions into clouds and powder (e.g. when going fullscreen).
+    pub fn burst_window_omnidirectional(&mut self, id: WindowId) {
+        let (found, width, base_x) = if let Some(li) = self.ids.iter().position(|&lid| lid == id) {
+            let l = &self.layers[li];
+            (Some(li), l.width(), l.base().x)
+        } else {
+            (None, 0.0, 0.0)
+        };
+
+        let center_x = base_x + width * 0.5;
+        let mut had_snow = false;
+
+        if let Some(li) = found {
+            let layer = &mut self.layers[li];
+            let mut dust = 0.0;
+            for i in 0..layer.count() {
+                let h = layer.heights[i];
+                if h <= 0.05 {
+                    continue;
+                }
+                had_snow = true;
+                let x = layer.center_x(i);
+                let surface = layer.surface(i);
+                dust += h * layer.column_width;
+                while dust >= 3.0 {
+                    let dir = if self.air.random.next() > 0.5 { 1.0 } else { -1.0 };
+                    self.air.lift(V2::new(x, surface), dir);
+                    if self.air.motes.len() < MAX_MOTES {
+                        let random = &mut self.air.random;
+                        let angle = random.range(0.2, std::f32::consts::PI - 0.2);
+                        let speed = random.range(60.0, 200.0);
+                        self.air.motes.push(Mote {
+                            position: V2::new(x, surface),
+                            velocity: V2::new(angle.cos() * speed, angle.sin() * speed),
+                            size: random.range(8.0, 18.0),
+                            alpha: random.range(0.12, 0.28),
+                            age: 0.0,
+                            life: random.range(0.5, 1.2),
+                        });
+                    }
+                    dust -= 3.0;
+                }
+                layer.set(i, 0.0);
+            }
+        } else if let Some(layer) = self.dormant.get_mut(&id) {
+            let mut dust = 0.0;
+            for i in 0..layer.count() {
+                let h = layer.heights[i];
+                if h <= 0.05 {
+                    continue;
+                }
+                had_snow = true;
+                let x = layer.center_x(i);
+                let surface = layer.surface(i);
+                dust += h * layer.column_width;
+                while dust >= 3.0 {
+                    let dir = if self.air.random.next() > 0.5 { 1.0 } else { -1.0 };
+                    self.air.lift(V2::new(x, surface), dir);
+                    if self.air.motes.len() < MAX_MOTES {
+                        let random = &mut self.air.random;
+                        let angle = random.range(0.2, std::f32::consts::PI - 0.2);
+                        let speed = random.range(60.0, 200.0);
+                        self.air.motes.push(Mote {
+                            position: V2::new(x, surface),
+                            velocity: V2::new(angle.cos() * speed, angle.sin() * speed),
+                            size: random.range(8.0, 18.0),
+                            alpha: random.range(0.12, 0.28),
+                            age: 0.0,
+                            life: random.range(0.5, 1.2),
+                        });
+                    }
+                    dust -= 3.0;
+                }
+                layer.set(i, 0.0);
+            }
+        }
+
+        if had_snow {
+            for flake in &mut self.air.flakes {
+                let dx = flake.position.x - center_x;
+                if dx.abs() < width * 0.6 {
+                    let sign = if dx >= 0.0 { 1.0 } else { -1.0 };
+                    flake.velocity.x += sign * self.air.random.range(150.0, 350.0);
+                    flake.velocity.y += self.air.random.range(40.0, 120.0);
+                }
+            }
+            self.air.heights_changed = true;
+        }
+    }
+
     fn blow(&mut self, dt: f32) {
         let Some(gust) = self.air.gust else { return };
         let age = (self.air.clock - gust.start) as f32;
@@ -911,7 +1056,7 @@ impl SnowSimulation {
                 } else {
                     LEDGE_THAW_DEPTH
                 };
-                if layer.thaw(dt * melt_pace, floor, THAW_RATE, THAW_TIME) {
+                if layer.thaw(dt * melt_pace * self.thaw_rate_multiplier, floor, THAW_RATE, THAW_TIME) {
                     self.air.heights_changed = true;
                 }
             }

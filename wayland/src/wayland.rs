@@ -28,7 +28,30 @@ use wayland_client::{
 };
 
 use crate::render::{Ambient, Renderer};
-use crate::tracker::{create_tracker, CompositorTracker};
+use crate::tracker::{create_tracker, CompositorTracker, TrackerConfig};
+
+#[derive(Clone, Copy, Debug)]
+pub struct AppConfig {
+    pub snowfall: Snowfall,
+    pub top_margin: f32,
+    pub track_layers: bool,
+    pub sweep_ground: bool,
+    pub melt: bool,
+    pub melt_rate: f32,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            snowfall: Snowfall::Steady,
+            top_margin: 48.0,
+            track_layers: true,
+            sweep_ground: false,
+            melt: true,
+            melt_rate: 1.0,
+        }
+    }
+}
 
 pub struct SnowhushApp {
     pub registry_state: RegistryState,
@@ -50,10 +73,11 @@ pub struct SnowhushApp {
     pub start_time: Instant,
     pub last_frame: Instant,
     pub frame_count: u64,
+    pub config: AppConfig,
 }
 
 impl SnowhushApp {
-    pub fn run(snowfall: Snowfall) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var("WAYLAND_DISPLAY").is_err() {
             let uid = unsafe { libc::getuid() };
             for i in 0..10 {
@@ -120,8 +144,14 @@ impl SnowhushApp {
 
         let renderer = pollster::block_on(Renderer::new(&instance, surface_wgpu, 1920, 1080))?;
 
-        let tracker = create_tracker();
-        let simulation = SnowSimulation::new(1920.0, 1080.0, snowfall);
+        let tracker_config = TrackerConfig {
+            top_margin: config.top_margin,
+            track_layers: config.track_layers,
+        };
+        let tracker = create_tracker(tracker_config);
+        let mut simulation = SnowSimulation::new(1920.0, 1080.0, config.snowfall);
+        simulation.thaws = config.melt;
+        simulation.thaw_rate_multiplier = config.melt_rate;
 
         let mut app = Self {
             registry_state: RegistryState::new(&globals),
@@ -139,6 +169,7 @@ impl SnowhushApp {
             start_time: Instant::now(),
             last_frame: Instant::now(),
             frame_count: 0,
+            config,
         };
 
         log::info!("Snowhush Wayland loop started");
@@ -185,6 +216,19 @@ impl SnowhushApp {
         let h = self.height as f32;
 
         let tracked = self.tracker.poll(w, h);
+
+        if let Some(dir) = tracked.workspace_changed {
+            if self.config.sweep_ground {
+                self.simulation.sweep_all(dir);
+            } else {
+                self.simulation.sweep_window_ledges(dir);
+            }
+        }
+
+        for &id in &tracked.fullscreen_windows {
+            self.simulation.burst_window_omnidirectional(id);
+        }
+
         let parked = HashSet::new();
         let elsewhere = HashSet::new();
 

@@ -60,11 +60,9 @@ fn sprite_vertex(
     let corner = vec2<f32>(f32(vid & 1u), f32(vid >> 1u));
     
     var out: SpriteOut;
-    let center_x = sprite.position.x / uniforms.view_size.x * 2.0 - 1.0;
-    let center_y = 1.0 - (sprite.position.y / uniforms.view_size.y * 2.0);
-    let offset_x = (corner.x - 0.5) * extent * 2.0 / (uniforms.view_size.x * uniforms.scale);
-    let offset_y = -(corner.y - 0.5) * extent * 2.0 / (uniforms.view_size.y * uniforms.scale);
-    out.position = vec4<f32>(center_x + offset_x, center_y + offset_y, 0.0, 1.0);
+    let center = sprite.position / uniforms.view_size * 2.0 - vec2<f32>(1.0, 1.0);
+    let offset = (corner - vec2<f32>(0.5, 0.5)) * extent * 2.0 / (uniforms.view_size * uniforms.scale);
+    out.position = vec4<f32>(center + offset, 0.0, 1.0);
     out.coord = vec2<f32>(corner.x, 1.0 - corner.y);
     out.streak = streak / extent;
     out.radius = pixels / extent * 0.5;
@@ -119,9 +117,8 @@ fn pile_vertex(@builtin(vertex_index) vid: u32) -> PileOut {
     let p = vec2<f32>(corner.x * f32(uniforms.column_count) * uniforms.column_width, mix(uniforms.pile_bottom, uniforms.pile_top, corner.y));
     var out: PileOut;
     let world = p + uniforms.origin;
-    let ndc_x = world.x / uniforms.view_size.x * 2.0 - 1.0;
-    let ndc_y = 1.0 - (world.y / uniforms.view_size.y * 2.0);
-    out.position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    let ndc = world / uniforms.view_size * 2.0 - vec2<f32>(1.0, 1.0);
+    out.position = vec4<f32>(ndc, 0.0, 1.0);
     out.local = p;
     return out;
 }

@@ -30,7 +30,7 @@ use wayland_client::{
 use crate::render::{Ambient, Renderer};
 use crate::tracker::{create_tracker, CompositorTracker, TrackerConfig};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
     pub snowfall: Snowfall,
     pub density: f32,
@@ -56,6 +56,12 @@ pub struct AppConfig {
     pub spray_force: f32,
     pub window_wake: f32,
     pub motion_blur: f32,
+    pub no_fullscreen_snow: bool,
+    pub grain_speed: f32,
+    pub grain_gravity: f32,
+    pub dynamic_weather: bool,
+    pub weather_mode: String,
+    pub weather_cycle_speed: f32,
 }
 
 impl Default for AppConfig {
@@ -85,6 +91,12 @@ impl Default for AppConfig {
             spray_force: 1.0,
             window_wake: 1.0,
             motion_blur: 1.0,
+            no_fullscreen_snow: false,
+            grain_speed: 1.0,
+            grain_gravity: 1.0,
+            dynamic_weather: false,
+            weather_mode: "auto".to_string(),
+            weather_cycle_speed: 1.0,
         }
     }
 }
@@ -133,14 +145,34 @@ pub struct JsonConfig {
     pub window_wake: f32,
     #[serde(default = "default_one")]
     pub motion_blur: f32,
+    #[serde(default = "default_false")]
+    pub no_fullscreen_snow: bool,
+    #[serde(default = "default_one")]
+    pub grain_speed: f32,
+    #[serde(default = "default_one")]
+    pub grain_gravity: f32,
+    #[serde(default = "default_false")]
+    pub dynamic_weather: bool,
+    #[serde(default = "default_weather_mode")]
+    pub weather_mode: String,
+    #[serde(default = "default_one")]
+    pub weather_cycle_speed: f32,
 }
 
 fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 fn default_one() -> f32 {
     1.0
+}
+
+fn default_weather_mode() -> String {
+    "auto".to_string()
 }
 
 fn default_static_wind() -> f32 {
@@ -184,6 +216,12 @@ impl JsonConfig {
             spray_force: cfg.spray_force,
             window_wake: cfg.window_wake,
             motion_blur: cfg.motion_blur,
+            no_fullscreen_snow: cfg.no_fullscreen_snow,
+            grain_speed: cfg.grain_speed,
+            grain_gravity: cfg.grain_gravity,
+            dynamic_weather: cfg.dynamic_weather,
+            weather_mode: cfg.weather_mode.clone(),
+            weather_cycle_speed: cfg.weather_cycle_speed,
         }
     }
 
@@ -221,6 +259,12 @@ impl JsonConfig {
             spray_force: self.spray_force.clamp(0.1, 5.0),
             window_wake: self.window_wake.clamp(0.0, 5.0),
             motion_blur: self.motion_blur.clamp(0.0, 5.0),
+            no_fullscreen_snow: self.no_fullscreen_snow,
+            grain_speed: self.grain_speed.clamp(0.1, 5.0),
+            grain_gravity: self.grain_gravity.clamp(0.05, 5.0),
+            dynamic_weather: self.dynamic_weather,
+            weather_mode: self.weather_mode.clone(),
+            weather_cycle_speed: self.weather_cycle_speed.clamp(0.1, 5.0),
         }
     }
 }
@@ -376,6 +420,10 @@ impl SnowhushApp {
         simulation.spray_force = config.spray_force;
         simulation.window_wake = config.window_wake;
         simulation.motion_blur = config.motion_blur;
+        simulation.no_fullscreen_snow = config.no_fullscreen_snow;
+        simulation.grain_speed = config.grain_speed;
+        simulation.grain_gravity = config.grain_gravity;
+        simulation.configure_weather(config.dynamic_weather, &config.weather_mode, config.weather_cycle_speed);
 
         if load_config_file().is_none() {
             save_config_file(&config);
@@ -471,6 +519,10 @@ impl SnowhushApp {
                     self.simulation.spray_force = new_cfg.spray_force;
                     self.simulation.window_wake = new_cfg.window_wake;
                     self.simulation.motion_blur = new_cfg.motion_blur;
+                    self.simulation.grain_speed = new_cfg.grain_speed;
+                    self.simulation.grain_gravity = new_cfg.grain_gravity;
+                    self.simulation.no_fullscreen_snow = new_cfg.no_fullscreen_snow;
+                    self.simulation.configure_weather(new_cfg.dynamic_weather, &new_cfg.weather_mode, new_cfg.weather_cycle_speed);
                     self.tracker.update_config(TrackerConfig {
                         top_margin: new_cfg.top_margin,
                         track_layers: new_cfg.track_layers,
@@ -497,6 +549,12 @@ impl SnowhushApp {
 
         for &id in &tracked.fullscreen_windows {
             self.simulation.burst_window_omnidirectional(id);
+        }
+
+        if self.config.no_fullscreen_snow && tracked.has_fullscreen {
+            self.simulation.accumulates = false;
+        } else {
+            self.simulation.accumulates = true;
         }
 
         let parked = HashSet::new();

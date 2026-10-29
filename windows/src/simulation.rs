@@ -186,21 +186,21 @@ struct Mote {
     life: f32,
 }
 
-struct Random(u64);
+pub struct Random(pub u64);
 
 impl Random {
-    fn new() -> Random {
+    pub fn new() -> Random {
         Random(RandomState::new().build_hasher().finish().max(1))
     }
 
-    fn next(&mut self) -> f32 {
+    pub fn next(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
         (self.0 >> 40) as f32 / (1u32 << 24) as f32
     }
 
-    fn range(&mut self, lower: f32, upper: f32) -> f32 {
+    pub fn range(&mut self, lower: f32, upper: f32) -> f32 {
         lower + (upper - lower) * self.next()
     }
 }
@@ -236,6 +236,8 @@ struct Air {
     pub spray_amount: f32,
     pub spray_size: f32,
     pub spray_force: f32,
+    pub grain_speed: f32,
+    pub grain_gravity: f32,
     cursor: Option<V2>,
     cursor_velocity: V2,
     held_layers: Vec<usize>,
@@ -276,8 +278,12 @@ pub struct SnowSimulation {
     pub spray_amount: f32,
     pub spray_size: f32,
     pub spray_force: f32,
+    pub grain_speed: f32,
+    pub grain_gravity: f32,
     pub motion_blur: f32,
     pub accumulates: bool,
+    pub no_fullscreen_snow: bool,
+    pub weather: crate::weather::WeatherSystem,
     pub windows_solid: bool,
     /// Side edges, left and right, with no display past them: a window slid past one leaves its snow heaped against the edge.
     pub walls: (bool, bool),
@@ -331,8 +337,12 @@ impl SnowSimulation {
             spray_amount: 1.0,
             spray_size: 1.0,
             spray_force: 1.0,
+            grain_speed: 1.0,
+            grain_gravity: 1.0,
             motion_blur: 1.0,
             accumulates: true,
+            no_fullscreen_snow: false,
+            weather: crate::weather::WeatherSystem::new(),
             windows_solid: true,
             walls: (false, false),
             snowfall_held: false,
@@ -370,6 +380,8 @@ impl SnowSimulation {
                 spray_amount: 1.0,
                 spray_size: 1.0,
                 spray_force: 1.0,
+                grain_speed: 1.0,
+                grain_gravity: 1.0,
                 cursor: None,
                 cursor_velocity: V2::ZERO,
                 held_layers: Vec::new(),
@@ -411,6 +423,21 @@ impl SnowSimulation {
         self.air.flakes.push(flake);
     }
 
+    #[cfg(test)]
+    pub fn grain_count(&self) -> usize {
+        self.air.grains.len()
+    }
+
+    #[cfg(test)]
+    pub fn mote_count(&self) -> usize {
+        self.air.motes.len()
+    }
+
+    #[cfg(test)]
+    pub fn emit_scatter_for_test(&mut self, area: f32, col_x: f32, surface_y: f32, win_bottom: f32, frame: Rect, vel: V2) {
+        self.air.emit_window_scatter(area, col_x, surface_y, win_bottom, frame, vel);
+    }
+
     pub fn pace(&self) -> Pace {
         self.pace
     }
@@ -435,6 +462,14 @@ impl SnowSimulation {
     /// Whether the held snowfall started by itself since the last call.
     pub fn take_snowfall_released(&mut self) -> bool {
         std::mem::take(&mut self.snowfall_released)
+    }
+
+    pub fn configure_weather(&mut self, enabled: bool, mode: &str, cycle_speed: f32) {
+        self.weather.enabled = enabled;
+        self.weather.cycle_speed = cycle_speed;
+        if self.weather.mode != mode {
+            self.weather.set_mode(mode, &mut self.air.random);
+        }
     }
 
     /// Scales the snowfall; flakes come and go through the usual cycle, so a change shows gradually.
@@ -483,8 +518,19 @@ impl SnowSimulation {
         self.air.spray_amount = self.spray_amount;
         self.air.spray_size = self.spray_size;
         self.air.spray_force = self.spray_force;
+        self.air.grain_speed = self.grain_speed;
+        self.air.grain_gravity = self.grain_gravity;
         let was_moving = self.sprite_count() > 0;
         self.air.heights_changed = false;
+
+        if self.weather.enabled {
+            self.weather.step(dt, self.air.clock, &mut self.air.random);
+            self.static_wind = self.weather.output_wind;
+            self.speed_factor = self.weather.output_speed;
+            self.density = self.weather.output_density;
+            self.sway_factor = self.weather.output_sway;
+            self.update_target();
+        }
 
         self.vary(dt);
         self.expire_parking();
@@ -1080,6 +1126,8 @@ impl SnowSimulation {
             return;
         }
         let damping = (-GRAIN_DRAG * dt).exp();
+        let gravity_scale = self.air.grain_gravity;
+        let speed_scale = self.air.grain_speed;
         let mut i = self.air.grains.len();
         while i > 0 {
             i -= 1;
@@ -1089,12 +1137,12 @@ impl SnowSimulation {
                 // Light powder: the wind keeps it moving toward the edge it was blown to, and it barely sinks.
                 let speed = if grain.velocity.x < 0.0 { -GUST_WIND * 1.6 } else { GUST_WIND * 1.6 };
                 grain.velocity.x += (speed - grain.velocity.x) * (dt * 2.0).min(1.0);
-                grain.velocity.y -= GRAVITY * 0.08 * dt;
+                grain.velocity.y -= GRAVITY * 0.08 * gravity_scale * dt;
             } else {
-                grain.velocity.y -= GRAVITY * dt;
+                grain.velocity.y -= GRAVITY * gravity_scale * dt;
                 grain.velocity *= damping;
             }
-            grain.position += grain.velocity * dt;
+            grain.position += grain.velocity * (speed_scale * dt);
 
             if self.window_wake > 0.001 {
                 for wake in &self.active_wakes {
@@ -1130,6 +1178,7 @@ impl SnowSimulation {
                 self.air.grains.swap_remove(i);
                 continue;
             } else if !grain.blown
+                && self.accumulates
                 && grain.velocity.y <= 0.0
                 && let Some((li, _)) = landing(&self.layers, grain.position.x, previous_y, grain.position.y, 0, self.windows_solid)
             {
@@ -1385,7 +1434,6 @@ impl SnowSimulation {
         };
 
         let center_x = base_x + width * 0.5;
-        let mut had_snow = false;
 
         if let Some(li) = found {
             let layer = &mut self.layers[li];
@@ -1395,7 +1443,6 @@ impl SnowSimulation {
                 if h <= 0.05 {
                     continue;
                 }
-                had_snow = true;
                 let x = layer.center_x(i);
                 let surface = layer.surface(i);
                 dust += h * layer.column_width;
@@ -1426,7 +1473,6 @@ impl SnowSimulation {
                 if h <= 0.05 {
                     continue;
                 }
-                had_snow = true;
                 let x = layer.center_x(i);
                 let surface = layer.surface(i);
                 dust += h * layer.column_width;
@@ -1452,17 +1498,63 @@ impl SnowSimulation {
             }
         }
 
-        if had_snow {
-            for flake in &mut self.air.flakes {
-                let dx = flake.position.x - center_x;
-                if dx.abs() < width * 0.6 {
-                    let sign = if dx >= 0.0 { 1.0 } else { -1.0 };
-                    flake.velocity.x += sign * self.air.random.range(150.0, 350.0);
-                    flake.velocity.y += self.air.random.range(40.0, 120.0);
-                }
-            }
-            self.air.heights_changed = true;
+        let center = V2::new(
+            if width > 10.0 { center_x } else { self.width * 0.5 },
+            self.height * 0.5,
+        );
+
+        // 1. Radial blast wave on airborne flakes
+        for flake in &mut self.air.flakes {
+            let diff = flake.position - center;
+            let dist = diff.length().max(1.0);
+            let push_dir = diff / dist;
+            let falloff = (1.0 - (dist / (self.width * 0.8)).min(1.0)).max(0.25);
+            let blast_force = self.air.random.range(250.0, 550.0) * falloff;
+            flake.velocity += push_dir * blast_force + V2::new(0.0, self.air.random.range(40.0, 160.0));
+            flake.can_wrap = false;
         }
+
+        // 2. Radial shockwave of sparkling physical grains
+        let grain_ring_count = (36.0 * self.air.spray_amount).clamp(12.0, 64.0) as usize;
+        for k in 0..grain_ring_count {
+            if self.air.grains.len() >= MAX_GRAINS {
+                break;
+            }
+            let angle = (k as f32 / grain_ring_count as f32) * std::f32::consts::TAU + self.air.random.range(-0.1, 0.1);
+            let dir = V2::new(angle.cos(), angle.sin());
+            let speed = self.air.random.range(180.0, 440.0) * self.air.spray_force;
+            self.air.grains.push(Grain {
+                position: center + dir * self.air.random.range(10.0, 60.0),
+                velocity: dir * speed + V2::new(0.0, self.air.random.range(20.0, 80.0)),
+                area: 1.5,
+                size: self.air.random.range(1.5, 3.2),
+                lump: 0.0,
+                blown: true,
+            });
+        }
+
+        // 3. Radial shockwave of billowing cloud motes
+        let mote_ring_count = (28.0 * self.air.cloud_amount).clamp(8.0, 48.0) as usize;
+        for k in 0..mote_ring_count {
+            if self.air.motes.len() >= MAX_MOTES {
+                break;
+            }
+            let angle = (k as f32 / mote_ring_count as f32) * std::f32::consts::TAU + self.air.random.range(-0.15, 0.15);
+            let dir = V2::new(angle.cos(), angle.sin());
+            let speed = self.air.random.range(100.0, 320.0);
+            self.air.motes.push(Mote {
+                position: center + dir * self.air.random.range(5.0, 40.0),
+                velocity: dir * speed + V2::new(0.0, self.air.random.range(10.0, 50.0)),
+                size: self.air.random.range(18.0, 40.0) * self.air.cloud_size,
+                alpha: self.air.random.range(0.20, 0.45) * self.air.cloud_density,
+                age: 0.0,
+                life: self.air.random.range(0.8, 1.8),
+            });
+        }
+
+        self.scattered_until = self.air.clock + 2.0;
+        self.air.last_window_motion = self.air.clock;
+        self.air.heights_changed = true;
     }
 
     fn blow(&mut self, dt: f32) {

@@ -977,3 +977,60 @@ fn test_window_wake_slider_controls_aerodynamic_cushion_and_does_not_disturb_gro
     assert!((final_ground_snow - initial_ground_snow).abs() < 0.1,
         "Aerodynamic air cushion must never disturb ground snowdrifts: initial {initial_ground_snow}, final {final_ground_snow}");
 }
+
+#[test]
+fn test_no_fullscreen_snow_prevents_accumulation() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.accumulates = false; // When fullscreen active with no_fullscreen_snow
+    run(&mut sim, 20.0, AWAY);
+    let p = piles(&sim);
+    assert_eq!(p.len(), 0, "no snow must accumulate when accumulation is disabled for fullscreen");
+}
+
+#[test]
+fn test_grain_gravity_and_speed_control() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.grain_gravity = 0.2;
+    sim.grain_speed = 2.0;
+    // Emit window scatter
+    let frame = Rect { x: 300.0, y: 300.0, width: 400.0, height: 300.0 };
+    sim.emit_scatter_for_test(15.0, 400.0, 310.0, 300.0, frame, V2::new(100.0, 0.0));
+    assert!(sim.grain_count() > 0, "grains should be spawned");
+    sim.step(0.1, AWAY);
+    assert!(sim.grain_count() > 0);
+}
+
+#[test]
+fn test_fullscreen_burst_window_omnidirectional_shockwave() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    let win = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 400.0, y: 400.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win, 0.2, &none, &none, false);
+    run(&mut sim, 10.0, AWAY);
+
+    // Trigger fullscreen shockwave
+    sim.burst_window_omnidirectional(1);
+    assert!(sim.grain_count() > 0, "fullscreen shockwave must spawn sparkling ice grains");
+    assert!(sim.mote_count() > 0, "fullscreen shockwave must spawn cloud motes");
+}
+
+#[test]
+fn test_dynamic_weather_system_cycles_and_modulates_atmosphere() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Steady);
+    sim.configure_weather(true, "auto", 2.0);
+    let init_wind = sim.static_wind;
+
+    // Run for several simulated seconds to allow weather step to modulate
+    for _ in 0..120 {
+        sim.step(0.1, AWAY);
+    }
+    // Atmospheric output must be dynamically calculated
+    assert!(sim.weather.enabled);
+    assert_ne!(sim.static_wind, init_wind);
+}

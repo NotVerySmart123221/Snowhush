@@ -31,6 +31,7 @@ pub struct TrackedState {
     pub cursor: Option<V2>,
     pub workspace_changed: Option<f32>,
     pub fullscreen_windows: Vec<isize>,
+    pub has_fullscreen: bool,
     pub static_surface_ids: HashSet<isize>,
     pub desktop_window_ids: HashSet<isize>,
     pub is_locked: bool,
@@ -533,6 +534,7 @@ impl CompositorTracker for HyprlandTracker {
                     }
                 }
                 self.previous_fullscreen = current_fullscreen;
+                state.has_fullscreen = !self.previous_fullscreen.is_empty();
 
                 if !is_locked {
                     clients.sort_by_key(|c| c.focus_history_id);

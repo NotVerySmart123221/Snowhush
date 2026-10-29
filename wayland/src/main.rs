@@ -197,6 +197,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--no-fullscreen-snow" => {
+                config.no_fullscreen_snow = true;
+            }
+            "--grain-speed" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.grain_speed = val.clamp(0.1, 5.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--grain-gravity" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.grain_gravity = val.clamp(0.05, 5.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--dynamic-weather" => {
+                config.dynamic_weather = true;
+            }
+            "--weather-mode" => {
+                if i + 1 < args.len() {
+                    config.weather_mode = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--weather-speed" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.weather_cycle_speed = val.clamp(0.1, 5.0);
+                    }
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 println!("Snowhush for Wayland (Hyprland, Niri & generic)");
                 println!("Usage: snowhush-wayland [OPTIONS]");
@@ -216,6 +252,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --cursor-force <FLOAT> Cursor displacement and wind force on snowflakes [default: 1.0]");
                 println!("      --window-wake <FLOAT> Moving window aerodynamic wake on airborne snow [default: 1.0]");
                 println!("      --motion-blur <FLOAT> Snowflake motion streak blur multiplier [default: 1.0]");
+                println!("      --no-fullscreen-snow  Disable snow accumulation while any window is fullscreen");
+                println!("      --grain-speed <FLOAT> Physical snow grain velocity multiplier [default: 1.0]");
+                println!("      --grain-gravity <FLOAT> Physical snow grain gravity multiplier [default: 1.0]");
+                println!("      --dynamic-weather     Enable dynamic weather cycles (wind, speed, density)");
+                println!("      --weather-mode <MODE> Weather mode: auto, calm, breeze, blizzard, squall, thaw [default: auto]");
+                println!("      --weather-speed <FLOAT> Dynamic weather cycle speed multiplier [default: 1.0]");
                 println!("  -h, --help                Print help");
                 return Ok(());
             }

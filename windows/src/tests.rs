@@ -370,3 +370,510 @@ fn step_cost() {
     let us = start.elapsed().as_secs_f64() * 1e6 / steps as f64;
     println!("rust: {us:.1} µs per step, {} sprites", simulation.sprite_count());
 }
+
+#[test]
+fn static_wind_affects_flake_motion() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Steady);
+    sim.static_wind = 60.0;
+    run(&mut sim, 3.0, AWAY);
+    let mut sprites = vec![Sprite::default(); sim.sprite_count()];
+    let count = sim.write_sprites(&mut sprites);
+    assert!(count > 0);
+    let avg_vx = sprites[..count].iter().map(|s| s.velocity.x).sum::<f32>() / count as f32;
+    assert!(avg_vx > 10.0, "average horizontal velocity should be positive: {avg_vx}");
+}
+
+#[test]
+fn window_leak_allows_snow_to_reach_ground() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.window_leak = 1.0;
+    let win = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 0.0, y: 100.0, width: 1280.0, height: 600.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win, 0.2, &none, &none, false);
+    run(&mut sim, 40.0, AWAY);
+    let p = piles(&sim);
+    // With leak=1.0, all snow bypasses the window and falls to ground.
+    // Window has 0 snow so it's omitted from piles (top <= 0.05).
+    assert_eq!(p.len(), 1, "only ground should have snow");
+    let ground_snow = p[0].1;
+    assert!(ground_snow > 500.0, "ground snow should accumulate with leak=1.0: {ground_snow}");
+
+    // Now test with leak=0.0: window catches snow
+    let mut sim2 = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim2.window_leak = 0.0;
+    sim2.update_windows(&win, 0.2, &none, &none, false);
+    run(&mut sim2, 40.0, AWAY);
+    let window_snow = piles(&sim2).iter().find(|(origin, _)| origin.y > 500.0).map_or(0.0, |p| p.1);
+    assert!(window_snow > 500.0, "window should catch snow with leak=0.0: {window_snow}");
+}
+
+#[test]
+fn motion_shed_releases_snow_on_movement() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.motion_shed = 2.0;
+
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 200.0, y: 100.0, width: 600.0, height: 400.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+    run(&mut sim, 40.0, AWAY);
+
+    let initial_window_snow = piles(&sim).iter().find(|(origin, _)| origin.y > 400.0).map_or(0.0, |p| p.1);
+    assert!(initial_window_snow > 100.0, "initial snow must accumulate: {initial_window_snow}");
+
+    // Move window rapidly by 300px in 16ms (speed ~ 18750 px/s)
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 500.0, y: 100.0, width: 600.0, height: 400.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.016, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    let moved_window_snow = piles(&sim).iter().find(|(origin, _)| origin.y > 400.0).map_or(0.0, |p| p.1);
+    assert!(moved_window_snow < initial_window_snow, "snow should shed on fast movement: before={initial_window_snow}, after={moved_window_snow}");
+}
+
+#[test]
+fn cascading_window_leak_distributes_snow_across_multiple_windows() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.window_leak = 0.5;
+
+    // Two stacked windows: Upper window (y=500..700), Lower window (y=200..400)
+    let wins = [
+        WindowSurface {
+            id: 1,
+            frame: Rect { x: 100.0, y: 500.0, width: 800.0, height: 200.0 },
+            blockers: Vec::new(),
+            corner_radius: 0.0,
+            corner_exponent: 2.0,
+        },
+        WindowSurface {
+            id: 2,
+            frame: Rect { x: 100.0, y: 200.0, width: 800.0, height: 200.0 },
+            blockers: Vec::new(),
+            corner_radius: 0.0,
+            corner_exponent: 2.0,
+        },
+    ];
+    sim.update_windows(&wins, 0.2, &none, &none, false);
+    run(&mut sim, 40.0, AWAY);
+
+    let all_piles = piles(&sim);
+    let upper_snow = all_piles.iter().find(|(origin, _)| origin.y > 600.0).map_or(0.0, |p| p.1);
+    let lower_snow = all_piles.iter().find(|(origin, _)| origin.y > 300.0 && origin.y < 600.0).map_or(0.0, |p| p.1);
+    let ground_snow = all_piles.iter().find(|(origin, _)| origin.y < 50.0).map_or(0.0, |p| p.1);
+
+    assert!(upper_snow > 50.0, "upper window should catch some snow: {upper_snow}");
+    assert!(lower_snow > 50.0, "lower window should catch cascading snow that skipped upper: {lower_snow}");
+    assert!(ground_snow > 50.0, "ground should receive cascading snow: {ground_snow}");
+}
+
+#[test]
+fn cursor_force_pushes_snowflakes() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.cursor_force = 3.0;
+
+    // Run a bit with cursor in center moving rightwards at high speed
+    for i in 0..60 {
+        sim.step(1.0 / 60.0, V2::new(400.0 + (i as f32) * 5.0, 400.0));
+    }
+    assert!(sim.sprite_count() > 0);
+}
+
+#[test]
+fn stationary_cursor_does_not_push_snowflakes() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.cursor_force = 3.0;
+    sim.static_wind = 0.0;
+    run(&mut sim, 20.0, AWAY);
+
+    let stationary_cursor = V2::new(600.0, 400.0);
+    // Hold cursor stationary for multiple steps
+    for _ in 0..15 {
+        sim.step(1.0 / 60.0, stationary_cursor);
+    }
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    // Flakes near the stationary cursor should NOT be shoved with huge velocities (> 80 px/s)
+    let blown_flakes = sprites[..count].iter().filter(|s| {
+        (s.position - stationary_cursor).length() < 70.0 && s.velocity.x.abs() > 80.0
+    }).count();
+
+    assert_eq!(blown_flakes, 0, "stationary cursor should not blow snowflakes away");
+}
+
+#[test]
+fn snowflakes_wrap_around_edges() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.scatter(&[ScatterPiece {
+        position: V2::new(1309.0, 400.0),
+        velocity: V2::new(100.0, -10.0),
+        color: [1.0, 1.0, 1.0],
+    }]);
+
+    let mut sprites = vec![Sprite::default(); 100];
+    sim.step(0.1, AWAY);
+    let count = sim.write_sprites(&mut sprites);
+    assert_eq!(count, 1, "snowflake should not be deleted, but wrapped around");
+    assert!(
+        sprites[0].position.x < 100.0,
+        "snowflake should wrap from right to left side: {}",
+        sprites[0].position.x
+    );
+}
+
+#[test]
+fn window_movement_plows_snow_on_ground() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+
+    // Accumulate snow on ground for 30s
+    run(&mut sim, 30.0, AWAY);
+    let p = piles(&sim);
+    assert_eq!(p.len(), 1);
+    assert!(p[0].1 > 500.0, "ground snow should accumulate");
+
+    // Spawn window at x=300..700, touching ground drift at y=5.0
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 5.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+
+    // Move window across to x=500..900, plowing into ground snow
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 500.0, y: 5.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.016, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    // Verify that ground snow inside the window's footprint (e.g. x=600) was plowed down to ~5.0
+    let mut heights = vec![0.0f32; sim.column_count()];
+    let _layers = sim.write_layers(&mut heights);
+    // Ground column at x=600:
+    let col_600 = (600.0 / crate::simulation::COLUMN_WIDTH) as usize;
+    let h_600 = heights[col_600];
+    assert!(
+        h_600 <= 6.0,
+        "ground snow at x=600 under window should be carved down to ~5.0: got {h_600}"
+    );
+}
+
+#[test]
+fn workspace_switch_teleports_snowflakes() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+
+    // Let flakes spawn
+    for _ in 0..10 {
+        sim.step(1.0 / 30.0, AWAY);
+    }
+    assert!(sim.sprite_count() > 0);
+
+    // Trigger workspace switch to the right
+    sim.sweep_window_ledges(1.0, 1.0, &none);
+    assert!(sim.workspace_transition_until > 0.0);
+
+    // Run steps during workspace transition
+    let mut sprites = vec![Sprite::default(); 5000];
+    for _ in 0..15 {
+        sim.step(1.0 / 30.0, AWAY);
+        let count = sim.write_sprites(&mut sprites);
+        for s in &sprites[..count] {
+            // During workspace transition, flakes wrap within [-35.0, 1280.0 + 35.0]
+            assert!(
+                s.position.x >= -45.0 && s.position.x <= 1280.0 + 45.0,
+                "flake escaped wrapping bounds during workspace transition: {}",
+                s.position.x
+            );
+        }
+    }
+}
+
+#[test]
+fn moving_window_creates_air_wake_on_snowflakes() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.static_wind = 0.0;
+
+    // Spawn window
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 300.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+
+    run(&mut sim, 20.0, AWAY);
+
+    // Move window rapidly to the right (x: 300 -> 600)
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 600.0, y: 300.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.016, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    // Verify that flakes in/near the window's wake have positive horizontal velocity
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    let pushed_flakes = sprites[..count].iter().filter(|s| {
+        s.position.x >= 550.0 && s.position.x <= 1050.0
+            && s.position.y >= 250.0 && s.position.y <= 650.0
+            && s.velocity.x > 50.0
+    }).count();
+
+    assert!(pushed_flakes > 0, "moving window should blow snowflakes in its wake");
+}
+
+#[test]
+fn workspace_switch_partially_sweeps_snowdrifts() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.thaws = false;
+    sim.static_wind = 0.0;
+
+    let win = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 400.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win, 0.2, &none, &none, false);
+
+    // Accumulate snow
+    run(&mut sim, 30.0, AWAY);
+    sim.set_snowfall(Snowfall::Off);
+    run(&mut sim, 10.0, AWAY);
+
+    let all_piles_before = piles(&sim);
+    let ground_before = all_piles_before[0].1;
+    let ledge_before = all_piles_before.iter().find(|(origin, _)| origin.y > 300.0).unwrap().1;
+
+    assert!(ground_before > 100.0, "ground should have accumulated snow");
+    assert!(ledge_before > 50.0, "window ledge should have accumulated snow");
+
+    // Perform workspace sweep
+    sim.sweep_window_ledges(1.0, 1.0, &none);
+
+    let all_piles_after = piles(&sim);
+    let ground_after = all_piles_after[0].1;
+    let ledge_after = all_piles_after.iter().find(|(origin, _)| origin.y > 300.0).map_or(0.0, |p| p.1);
+
+    // Window ledges: all snow flies off into clouds and grains (no drifts remain on window!)
+    assert_eq!(ledge_after, 0.0, "window ledge snow should fly away completely upon workspace sweep");
+
+    // Ground: snowdrifts are partially swept, retaining most of their accumulation
+    assert!(ground_after < ground_before, "ground snow should decrease slightly after sweep");
+    assert!(ground_after > ground_before * 0.6, "ground snow should retain most of its drift: before={}, after={}", ground_before, ground_after);
+
+    // Verify grains and cloud motes were spawned into the air
+    assert!(sim.sprite_count() > 0, "snow sweep should launch flying grains and cloud motes");
+}
+
+#[test]
+fn cursor_movement_creates_cloud_motes() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.thaws = false;
+    sim.cursor_force = 1.0;
+
+    // Place a snowdrift on the ground
+    for i in 100..200 {
+        sim.layers_mut()[0].set(i, 20.0);
+    }
+    sim.layers_mut()[0].refresh_top();
+
+    // Move cursor rapidly across the snowdrift
+    let dt = 1.0 / 60.0;
+    sim.step(dt, V2::new(200.0, 10.0));
+    sim.step(dt, V2::new(300.0, 10.0));
+    sim.step(dt, V2::new(400.0, 10.0));
+
+    // Verify that motes were generated
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    // Motes have soft == 0.98 in write_sprites
+    let cloud_motes = sprites[..count].iter().filter(|s| s.soft > 0.95).count();
+    assert!(cloud_motes > 0, "moving cursor through snow should generate cloud motes");
+}
+
+#[test]
+fn constant_strong_wind_erodes_snowdrifts() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.thaws = false;
+
+    // Manually place a tall snowdrift on the ground
+    for i in 100..200 {
+        sim.layers_mut()[0].set(i, 25.0);
+    }
+    sim.layers_mut()[0].refresh_top();
+    let before = piles(&sim)[0].1;
+    assert!(before > 0.0);
+
+    // With calm wind (15 px/s), drift should remain stable (no erosion)
+    sim.static_wind = 15.0;
+    for _ in 0..60 {
+        sim.step(1.0 / 30.0, AWAY);
+    }
+    let after_calm = piles(&sim)[0].1;
+    assert!((after_calm - before).abs() < 0.1, "calm wind should not erode snowdrifts: before={}, after={}", before, after_calm);
+
+    // With strong constant wind (75 px/s), drift should be eroded and shed powder
+    sim.static_wind = 75.0;
+    for _ in 0..120 {
+        sim.step(1.0 / 30.0, AWAY);
+    }
+    let after_strong = piles(&sim)[0].1;
+    assert!(after_strong < after_calm * 0.99, "strong constant wind should erode snowdrift: calm={}, strong={}", after_calm, after_strong);
+}
+
+#[test]
+fn snow_passes_through_windows_when_not_solid() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.thaws = false;
+    sim.windows_solid = false; // lock screen mode
+
+    let win = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 200.0, y: 300.0, width: 800.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win, 0.016, &none, &none, false);
+
+    // Run simulation for 40 seconds of heavy snowfall
+    run(&mut sim, 40.0, AWAY);
+
+    let all_piles = piles(&sim);
+    let window_snow = all_piles.iter().find(|(origin, _)| origin.y > 500.0).map_or(0.0, |p| p.1);
+    assert_eq!(window_snow, 0.0, "snow must not settle on window when windows_solid is false");
+
+    let ground_snow = all_piles.iter().find(|(origin, _)| origin.y < 50.0).map_or(0.0, |p| p.1);
+    assert!(ground_snow > 50.0, "snow must pass through window and settle on the ground: {ground_snow}");
+}
+
+#[test]
+fn window_plow_emits_physical_grains_and_clouds() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.thaws = false;
+
+    // Place a snowdrift on the ground (y=0..20)
+    for i in 100..200 {
+        sim.layers_mut()[0].set(i, 20.0);
+    }
+    sim.layers_mut()[0].refresh_top();
+
+    // Spawn window touching ground snow (y=5.0)
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 200.0, y: 5.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.016, &none, &none, false);
+
+    // Rapidly move the window horizontally to plow ground snow
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 350.0, y: 5.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.016, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+
+    // Physical grains have soft <= 0.35 and alpha > 0.0
+    let grains_count = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05).count();
+    // Cloud motes have soft == 1.0
+    let motes_count = sprites[..count].iter().filter(|s| s.soft > 0.95).count();
+
+    assert!(grains_count > 0, "moving window plowing snow must emit physical grains: {grains_count}");
+    assert!(motes_count > 0, "moving window plowing snow must emit cloud motes: {motes_count}");
+}
+
+#[test]
+fn test_lockscreen_stashes_desktop_windows_and_collects_on_lock_card() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.thaws = false;
+
+    // 1. Regular desktop window accumulates snow
+    let desktop_win = [WindowSurface {
+        id: 101,
+        frame: Rect { x: 100.0, y: 300.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&desktop_win, 0.016, &none, &none, false);
+    run(&mut sim, 30.0, AWAY);
+
+    let desktop_snow = piles(&sim).iter().find(|(origin, _)| origin.y > 500.0).map_or(0.0, |p| p.1);
+    assert!(desktop_snow > 10.0, "desktop window should have accumulated snow: {desktop_snow}");
+
+    // 2. Lock screen activates: desktop window becomes elsewhere (dormant), lock card appears
+    let mut elsewhere = HashSet::new();
+    elsewhere.insert(101);
+
+    let lock_card = [WindowSurface {
+        id: 0x710c_5c23,
+        frame: Rect { x: 440.0, y: 250.0, width: 400.0, height: 260.0 },
+        blockers: Vec::new(),
+        corner_radius: 16.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&lock_card, 0.016, &none, &elsewhere, false);
+
+    // Desktop window snow must NOT be rendered / must not hang in air
+    let active_piles = piles(&sim);
+    let mid_air_desktop_snow = active_piles.iter().find(|(origin, _)| origin.x < 300.0 && origin.y > 500.0).map_or(0.0, |p| p.1);
+    assert_eq!(mid_air_desktop_snow, 0.0, "dormant desktop window snow must not hang in air during lock");
+
+    // Snow falls onto lock card
+    run(&mut sim, 30.0, AWAY);
+    let lock_snow = piles(&sim).iter().find(|(origin, _)| origin.x > 400.0 && origin.y > 450.0).map_or(0.0, |p| p.1);
+    assert!(lock_snow > 10.0, "snow must land and accumulate on lock card: {lock_snow}");
+
+    // 3. Screen unlocks: lock card gone, desktop window restored from dormant
+    let empty_elsewhere = HashSet::new();
+    sim.update_windows(&desktop_win, 0.016, &none, &empty_elsewhere, false);
+    let restored_desktop_snow = piles(&sim).iter().find(|(origin, _)| origin.y > 500.0).map_or(0.0, |p| p.1);
+    assert!(restored_desktop_snow > 10.0, "desktop snow should be restored after unlocking: {restored_desktop_snow}");
+}

@@ -8,7 +8,11 @@ use wayland::{AppConfig, SnowhushApp};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let mut config = AppConfig::default();
+    let mut config = if let Some((file_cfg, _)) = wayland::load_config_file() {
+        file_cfg
+    } else {
+        AppConfig::default()
+    };
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -54,6 +58,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--no-wind-accel" => {
+                config.wind_accel = false;
+            }
+            "--wind-factor" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.wind_factor = val;
+                    }
+                    i += 1;
+                }
+            }
+            "--static-wind" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.static_wind = val;
+                    }
+                    i += 1;
+                }
+            }
+            "--window-leak" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.window_leak = val.clamp(0.0, 1.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--motion-shed" | "--motion-sensitivity" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.motion_shed = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--cursor-force" | "--cursor-factor" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cursor_force = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--density" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.density = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--speed" | "--speed-factor" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.speed_factor = val.clamp(0.1, 5.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--sway" | "--sway-factor" | "--turbulence" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.sway_factor = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 println!("Snowhush for Wayland (Hyprland, Niri & generic)");
                 println!("Usage: snowhush-wayland [OPTIONS]");
@@ -65,6 +136,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --sweep-ground        Also sweep ground snow during workspace switch transitions");
                 println!("      --no-melt             Disable snow thawing and melting over time");
                 println!("      --melt-rate <FLOAT>   Snow thaw rate multiplier [default: 1.0]");
+                println!("      --no-wind-accel       Disable airborne snowflake acceleration on workspace switch");
+                println!("      --wind-factor <FLOAT> Wind gust strength multiplier [default: 1.0]");
+                println!("      --static-wind <FLOAT> Ambient horizontal wind speed in px/s [default: 20.0]");
+                println!("      --window-leak <FLOAT> Fraction of snowflakes that pass windows to ground [0.0-1.0, default: 0.35]");
+                println!("      --motion-shed <FLOAT> Window motion snow shedding sensitivity [default: 1.0]");
+                println!("      --cursor-force <FLOAT> Cursor displacement and wind force on snowflakes [default: 1.0]");
                 println!("  -h, --help                Print help");
                 return Ok(());
             }
@@ -74,8 +151,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "Starting Snowhush Wayland (snowfall: {:?}, top_margin: {}, layers: {}, melt: {} (x{}))...",
-        config.snowfall, config.top_margin, config.track_layers, config.melt, config.melt_rate
+        "Starting Snowhush Wayland (snowfall: {:?}, top_margin: {}, layers: {}, melt: {} (x{}), wind: {} (x{}), static_wind: {}, leak: {}, motion_shed: {}, cursor: {})...",
+        config.snowfall, config.top_margin, config.track_layers, config.melt, config.melt_rate, config.wind_accel, config.wind_factor, config.static_wind, config.window_leak, config.motion_shed, config.cursor_force
     );
     SnowhushApp::run(config)?;
 

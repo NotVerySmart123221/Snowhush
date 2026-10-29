@@ -30,26 +30,177 @@ use wayland_client::{
 use crate::render::{Ambient, Renderer};
 use crate::tracker::{create_tracker, CompositorTracker, TrackerConfig};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AppConfig {
     pub snowfall: Snowfall,
+    pub density: f32,
+    pub speed_factor: f32,
+    pub sway_factor: f32,
     pub top_margin: f32,
     pub track_layers: bool,
     pub sweep_ground: bool,
     pub melt: bool,
     pub melt_rate: f32,
+    pub wind_accel: bool,
+    pub wind_factor: f32,
+    pub static_wind: f32,
+    pub window_leak: f32,
+    pub motion_shed: f32,
+    pub cursor_force: f32,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             snowfall: Snowfall::Steady,
+            density: 1.0,
+            speed_factor: 1.0,
+            sway_factor: 1.0,
             top_margin: 48.0,
             track_layers: true,
             sweep_ground: false,
             melt: true,
             melt_rate: 1.0,
+            wind_accel: true,
+            wind_factor: 1.0,
+            static_wind: 20.0,
+            window_leak: 0.35,
+            motion_shed: 1.0,
+            cursor_force: 1.0,
         }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct JsonConfig {
+    pub snowfall: String,
+    #[serde(default = "default_one")]
+    pub density: f32,
+    #[serde(default = "default_one")]
+    pub speed_factor: f32,
+    #[serde(default = "default_one")]
+    pub sway_factor: f32,
+    pub top_margin: f32,
+    pub track_layers: bool,
+    pub sweep_ground: bool,
+    pub melt: bool,
+    pub melt_rate: f32,
+    #[serde(default = "default_true")]
+    pub wind_accel: bool,
+    #[serde(default = "default_one")]
+    pub wind_factor: f32,
+    #[serde(default = "default_static_wind")]
+    pub static_wind: f32,
+    #[serde(default = "default_window_leak")]
+    pub window_leak: f32,
+    #[serde(default = "default_one")]
+    pub motion_shed: f32,
+    #[serde(default = "default_one")]
+    pub cursor_force: f32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_one() -> f32 {
+    1.0
+}
+
+fn default_static_wind() -> f32 {
+    20.0
+}
+
+fn default_window_leak() -> f32 {
+    0.35
+}
+
+impl JsonConfig {
+    pub fn from_app_config(cfg: &AppConfig) -> Self {
+        Self {
+            snowfall: match cfg.snowfall {
+                Snowfall::Off => "off",
+                Snowfall::Light => "light",
+                Snowfall::Steady => "steady",
+                Snowfall::Heavy => "heavy",
+                Snowfall::Variable => "variable",
+            }.into(),
+            density: cfg.density,
+            speed_factor: cfg.speed_factor,
+            sway_factor: cfg.sway_factor,
+            top_margin: cfg.top_margin,
+            track_layers: cfg.track_layers,
+            sweep_ground: cfg.sweep_ground,
+            melt: cfg.melt,
+            melt_rate: cfg.melt_rate,
+            wind_accel: cfg.wind_accel,
+            wind_factor: cfg.wind_factor,
+            static_wind: cfg.static_wind,
+            window_leak: cfg.window_leak,
+            motion_shed: cfg.motion_shed,
+            cursor_force: cfg.cursor_force,
+        }
+    }
+
+    pub fn to_app_config(&self) -> AppConfig {
+        let snowfall = match self.snowfall.to_lowercase().as_str() {
+            "off" => Snowfall::Off,
+            "light" => Snowfall::Light,
+            "steady" => Snowfall::Steady,
+            "heavy" => Snowfall::Heavy,
+            "variable" => Snowfall::Variable,
+            _ => Snowfall::Steady,
+        };
+        AppConfig {
+            snowfall,
+            density: self.density.clamp(0.0, 5.0),
+            speed_factor: self.speed_factor.clamp(0.1, 5.0),
+            sway_factor: self.sway_factor.clamp(0.0, 5.0),
+            top_margin: self.top_margin,
+            track_layers: self.track_layers,
+            sweep_ground: self.sweep_ground,
+            melt: self.melt,
+            melt_rate: self.melt_rate,
+            wind_accel: self.wind_accel,
+            wind_factor: self.wind_factor,
+            static_wind: self.static_wind,
+            window_leak: self.window_leak,
+            motion_shed: self.motion_shed,
+            cursor_force: self.cursor_force,
+        }
+    }
+}
+
+pub fn config_path() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home).join(".config/snowhush/config.json")
+    } else {
+        std::path::PathBuf::from("/tmp/snowhush_config.json")
+    }
+}
+
+pub fn load_config_file() -> Option<(AppConfig, std::time::SystemTime)> {
+    let p = config_path();
+    if let Ok(meta) = std::fs::metadata(&p) {
+        if let Ok(mtime) = meta.modified() {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                if let Ok(json_cfg) = serde_json::from_str::<JsonConfig>(&content) {
+                    return Some((json_cfg.to_app_config(), mtime));
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn save_config_file(cfg: &AppConfig) {
+    let p = config_path();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json_cfg = JsonConfig::from_app_config(cfg);
+    if let Ok(s) = serde_json::to_string_pretty(&json_cfg) {
+        let _ = std::fs::write(&p, s);
     }
 }
 
@@ -74,6 +225,7 @@ pub struct SnowhushApp {
     pub last_frame: Instant,
     pub frame_count: u64,
     pub config: AppConfig,
+    pub last_config_mtime: Option<std::time::SystemTime>,
 }
 
 impl SnowhushApp {
@@ -150,8 +302,22 @@ impl SnowhushApp {
         };
         let tracker = create_tracker(tracker_config);
         let mut simulation = SnowSimulation::new(1920.0, 1080.0, config.snowfall);
+        simulation.set_density(config.density);
+        simulation.speed_factor = config.speed_factor;
+        simulation.sway_factor = config.sway_factor;
         simulation.thaws = config.melt;
         simulation.thaw_rate_multiplier = config.melt_rate;
+        simulation.wind_accel = config.wind_accel;
+        simulation.wind_factor = config.wind_factor;
+        simulation.static_wind = config.static_wind;
+        simulation.window_leak = config.window_leak;
+        simulation.motion_shed = config.motion_shed;
+        simulation.cursor_force = config.cursor_force;
+
+        if load_config_file().is_none() {
+            save_config_file(&config);
+        }
+        let last_config_mtime = std::fs::metadata(config_path()).ok().and_then(|m| m.modified().ok());
 
         let mut app = Self {
             registry_state: RegistryState::new(&globals),
@@ -170,6 +336,7 @@ impl SnowhushApp {
             last_frame: Instant::now(),
             frame_count: 0,
             config,
+            last_config_mtime,
         };
 
         log::info!("Snowhush Wayland loop started");
@@ -212,16 +379,47 @@ impl SnowhushApp {
         let dt = (now - self.last_frame).as_secs_f32().min(0.05);
         self.last_frame = now;
 
+        if self.frame_count.is_multiple_of(30) {
+            if let Some((new_cfg, mtime)) = load_config_file() {
+                if Some(mtime) != self.last_config_mtime {
+                    self.last_config_mtime = Some(mtime);
+                    if new_cfg.snowfall != self.config.snowfall {
+                        self.simulation.set_snowfall(new_cfg.snowfall);
+                    }
+                    if (new_cfg.density - self.config.density).abs() > 0.001 {
+                        self.simulation.set_density(new_cfg.density);
+                    }
+                    self.simulation.speed_factor = new_cfg.speed_factor;
+                    self.simulation.sway_factor = new_cfg.sway_factor;
+                    self.simulation.thaws = new_cfg.melt;
+                    self.simulation.thaw_rate_multiplier = new_cfg.melt_rate;
+                    self.simulation.wind_accel = new_cfg.wind_accel;
+                    self.simulation.wind_factor = new_cfg.wind_factor;
+                    self.simulation.static_wind = new_cfg.static_wind;
+                    self.simulation.window_leak = new_cfg.window_leak;
+                    self.simulation.motion_shed = new_cfg.motion_shed;
+                    self.simulation.cursor_force = new_cfg.cursor_force;
+                    self.tracker.update_config(TrackerConfig {
+                        top_margin: new_cfg.top_margin,
+                        track_layers: new_cfg.track_layers,
+                    });
+                    self.config = new_cfg;
+                }
+            }
+        }
+
         let w = self.width as f32;
         let h = self.height as f32;
 
         let tracked = self.tracker.poll(w, h);
 
-        if let Some(dir) = tracked.workspace_changed {
+        if let Some(delta) = tracked.workspace_changed {
+            let dir = if delta > 0.0 { 1.0 } else { -1.0 };
+            let distance = delta.abs();
             if self.config.sweep_ground {
-                self.simulation.sweep_all(dir);
+                self.simulation.sweep_all(dir, distance, &tracked.static_surface_ids);
             } else {
-                self.simulation.sweep_window_ledges(dir);
+                self.simulation.sweep_window_ledges(dir, distance, &tracked.static_surface_ids);
             }
         }
 
@@ -230,8 +428,17 @@ impl SnowhushApp {
         }
 
         let parked = HashSet::new();
-        let elsewhere = HashSet::new();
+        let mut elsewhere = HashSet::new();
 
+        if tracked.is_locked {
+            // While screen is locked, stash desktop windows into elsewhere (dormant),
+            // so their snow does not hang in mid-air on the lock screen.
+            for &id in &tracked.desktop_window_ids {
+                elsewhere.insert(id);
+            }
+        }
+
+        self.simulation.windows_solid = true;
         self.simulation.update_windows(&tracked.surfaces, dt, &parked, &elsewhere, false);
 
         let cursor = tracked.cursor.unwrap_or(V2::new(-1000.0, -1000.0));

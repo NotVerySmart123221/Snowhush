@@ -7,6 +7,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug)]
@@ -30,19 +31,99 @@ pub struct TrackedState {
     pub cursor: Option<V2>,
     pub workspace_changed: Option<f32>,
     pub fullscreen_windows: Vec<isize>,
+    pub static_surface_ids: HashSet<isize>,
+    pub desktop_window_ids: HashSet<isize>,
+    pub is_locked: bool,
     #[allow(dead_code)]
     pub is_idle: bool,
 }
 
 pub trait CompositorTracker {
     fn poll(&mut self, screen_width: f32, screen_height: f32) -> TrackedState;
+    fn update_config(&mut self, _config: TrackerConfig) {}
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ShmLedge {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    #[serde(default = "default_shm_radius")]
+    pub radius: f32,
+    #[serde(default = "default_shm_visible")]
+    pub visible: bool,
+}
+
+fn default_shm_radius() -> f32 {
+    12.0
+}
+
+fn default_shm_visible() -> bool {
+    true
+}
+
+#[derive(Clone, Debug)]
+struct AnimatedSurface {
+    id: isize,
+    current_frame: Rect,
+    target_frame: Rect,
+    velocity: [f32; 4],
+    corner_radius: f32,
+    corner_exponent: f32,
+    is_static: bool,
+    focus_order: i64,
+    last_seen: Instant,
+    wants_removal: bool,
+}
+
+fn smooth_damp_val(current: &mut f32, velocity: &mut f32, target: f32, time: f32, dt: f32) {
+    let omega = 2.0 / time.max(0.0001);
+    let x = omega * dt;
+    let exp = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+    let change = *current - target;
+    let temp = (*velocity + change * omega) * dt;
+    *velocity = (*velocity - temp * omega) * exp;
+    *current = target + (change + temp) * exp;
+}
+
+fn smooth_damp_rect(current: &mut Rect, velocity: &mut [f32; 4], target: Rect, time: f32, dt: f32) {
+    if (current.x - target.x).abs() > 1200.0 || (current.y - target.y).abs() > 1000.0 {
+        *current = target;
+        *velocity = [0.0; 4];
+        return;
+    }
+
+    smooth_damp_val(&mut current.x, &mut velocity[0], target.x, time, dt);
+    smooth_damp_val(&mut current.y, &mut velocity[1], target.y, time, dt);
+    smooth_damp_val(&mut current.width, &mut velocity[2], target.width, time, dt);
+    smooth_damp_val(&mut current.height, &mut velocity[3], target.height, time, dt);
+
+    if (current.x - target.x).abs() < 0.25 && velocity[0].abs() < 1.0 {
+        current.x = target.x;
+        velocity[0] = 0.0;
+    }
+    if (current.y - target.y).abs() < 0.25 && velocity[1].abs() < 1.0 {
+        current.y = target.y;
+        velocity[1] = 0.0;
+    }
+    if (current.width - target.width).abs() < 0.25 && velocity[2].abs() < 1.0 {
+        current.width = target.width;
+        velocity[2] = 0.0;
+    }
+    if (current.height - target.height).abs() < 0.25 && velocity[3].abs() < 1.0 {
+        current.height = target.height;
+        velocity[3] = 0.0;
+    }
 }
 
 pub struct HyprlandTracker {
     instance_sig: Option<String>,
     socket_path: Option<PathBuf>,
-    cached_surfaces: Vec<WindowSurface>,
+    animated_surfaces: HashMap<isize, AnimatedSurface>,
     last_surfaces_poll: Instant,
+    last_frame_poll: Instant,
     config: TrackerConfig,
     previous_workspace: Option<i64>,
     previous_fullscreen: HashSet<isize>,
@@ -79,6 +160,8 @@ struct HyprClient {
     focus_history_id: i64,
     #[serde(default)]
     fullscreen: i32,
+    #[serde(default)]
+    pinned: bool,
 }
 
 #[derive(Deserialize)]
@@ -133,8 +216,9 @@ impl HyprlandTracker {
         Self {
             instance_sig: sig,
             socket_path,
-            cached_surfaces: Vec::new(),
+            animated_surfaces: HashMap::new(),
             last_surfaces_poll: Instant::now() - Duration::from_secs(10),
+            last_frame_poll: Instant::now(),
             config,
             previous_workspace: None,
             previous_fullscreen: HashSet::new(),
@@ -181,9 +265,77 @@ fn nix_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+pub fn check_is_locked() -> bool {
+    // 1. Check Serpantinum lock file in runtime dir or /tmp
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let lock_path = std::path::Path::new(&runtime_dir).join("serpantinum/lock/locked");
+        if lock_path.exists() {
+            return true;
+        }
+    } else {
+        let uid = nix_uid();
+        let lock_path = PathBuf::from(format!("/run/user/{}/serpantinum/lock/locked", uid));
+        if lock_path.exists() {
+            return true;
+        }
+    }
+    if std::path::Path::new("/tmp/serpantinum/lock/locked").exists() {
+        return true;
+    }
+
+    // 2. Throttle process scan to ~3 times per second (300ms)
+    static LAST_CHECK_MS: AtomicU64 = AtomicU64::new(0);
+    static IS_LOCKED_PROC: AtomicBool = AtomicBool::new(false);
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let last = LAST_CHECK_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) > 300 {
+        LAST_CHECK_MS.store(now_ms, Ordering::Relaxed);
+        let my_pid = std::process::id();
+        let mut proc_locked = false;
+        if let Ok(entries) = fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name();
+                if let Some(s) = file_name.to_str() {
+                    if let Ok(pid) = s.parse::<u32>() {
+                        if pid == my_pid {
+                            continue;
+                        }
+                        let cmdline_path = entry.path().join("cmdline");
+                        if let Ok(cmd) = fs::read(cmdline_path) {
+                            let cmd_str = String::from_utf8_lossy(&cmd);
+                            if cmd_str.contains("Lock.qml")
+                                || cmd_str.contains("hyprlock")
+                                || cmd_str.contains("swaylock")
+                                || cmd_str.contains("waylock")
+                                || cmd_str.contains("gtklock")
+                            {
+                                proc_locked = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        IS_LOCKED_PROC.store(proc_locked, Ordering::Relaxed);
+        proc_locked
+    } else {
+        IS_LOCKED_PROC.load(Ordering::Relaxed)
+    }
+}
+
 impl CompositorTracker for HyprlandTracker {
     fn poll(&mut self, screen_width: f32, screen_height: f32) -> TrackedState {
         let mut state = TrackedState::default();
+
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame_poll).as_secs_f32().min(0.05).max(0.001);
+        self.last_frame_poll = now;
 
         // Cursor position - fast socket query
         if let Some(cursor) = self
@@ -193,11 +345,11 @@ impl CompositorTracker for HyprlandTracker {
             state.cursor = Some(V2::new(cursor.x, screen_height - cursor.y));
         }
 
-        let now = Instant::now();
-        if now.duration_since(self.last_surfaces_poll) >= Duration::from_millis(50) || self.cached_surfaces.is_empty() {
+        if now.duration_since(self.last_surfaces_poll) >= Duration::from_millis(40) || self.animated_surfaces.is_empty() {
             self.last_surfaces_poll = now;
-            let mut surfaces = Vec::new();
-            let mut frames_on_top: Vec<Rect> = Vec::new();
+
+            // Target surfaces collection: id -> (target_frame, radius, is_static, focus_order)
+            let mut targets: HashMap<isize, (Rect, f32, bool, i64)> = HashMap::new();
 
             // Active workspace & workspace transition detection
             let mut active_workspaces = Vec::new();
@@ -210,8 +362,8 @@ impl CompositorTracker for HyprlandTracker {
                     if let Some(prev) = self.previous_workspace
                         && prev != active_ws
                     {
-                        let dir = if active_ws > prev { 1.0 } else { -1.0 };
-                        state.workspace_changed = Some(dir);
+                        let delta = (active_ws - prev) as f32;
+                        state.workspace_changed = Some(delta);
                     }
                     self.previous_workspace = Some(active_ws);
                 }
@@ -226,20 +378,115 @@ impl CompositorTracker for HyprlandTracker {
                 }
             }
 
-            // Layer surfaces (Quickshell, panels, docks)
-            if self.config.track_layers
+            let is_locked = check_is_locked();
+            state.is_locked = is_locked;
+
+            let mut desktop_window_ids = HashSet::new();
+            let mut lock_shm_found = false;
+
+            // Check Quickshell explicit ledges via /dev/shm/snowhush_ledges.json
+            if self.config.track_layers || is_locked {
+                if let Ok(content) = std::fs::read_to_string("/dev/shm/snowhush_ledges.json") {
+                    if let Ok(shm_list) = serde_json::from_str::<Vec<ShmLedge>>(&content) {
+                        for ledge in shm_list {
+                            if ledge.id == "qs-lockscreen" {
+                                if ledge.visible && ledge.width > 20.0 && ledge.height > 20.0 {
+                                    let mut hasher = DefaultHasher::new();
+                                    "qs-shm-".hash(&mut hasher);
+                                    ledge.id.hash(&mut hasher);
+                                    let id = hasher.finish() as isize;
+
+                                    let frame = Rect {
+                                        x: ledge.x,
+                                        y: screen_height - (ledge.y + ledge.height),
+                                        width: ledge.width,
+                                        height: ledge.height,
+                                    };
+                                    targets.insert(id, (frame, ledge.radius, true, -1000));
+                                    lock_shm_found = true;
+                                }
+                                continue;
+                            }
+
+                            // If locked, skip regular desktop layers
+                            if is_locked {
+                                continue;
+                            }
+
+                            if ledge.width <= 10.0 || ledge.height <= 10.0 {
+                                continue;
+                            }
+
+                            // Trim or exclude ledges within top_margin
+                            let eff_top = if self.config.top_margin > 0.0 {
+                                ledge.y.max(self.config.top_margin)
+                            } else {
+                                ledge.y
+                            };
+                            let eff_bottom = ledge.y + ledge.height;
+
+                            if eff_bottom <= eff_top + 4.0 {
+                                continue;
+                            }
+
+                            let mut hasher = DefaultHasher::new();
+                            "qs-shm-".hash(&mut hasher);
+                            ledge.id.hash(&mut hasher);
+                            let id = hasher.finish() as isize;
+
+                            let eff_h = eff_bottom - eff_top;
+                            let target_y = if ledge.visible {
+                                screen_height - eff_bottom
+                            } else {
+                                // Slide off-screen when hidden
+                                if ledge.y > screen_height / 2.0 {
+                                    -eff_h - 40.0
+                                } else {
+                                    screen_height + 40.0
+                                }
+                            };
+
+                            let frame = Rect {
+                                x: ledge.x,
+                                y: target_y,
+                                width: ledge.width,
+                                height: eff_h,
+                            };
+
+                            targets.insert(id, (frame, ledge.radius, true, -1000));
+                        }
+                    }
+                }
+            }
+
+            // If locked and no explicit qs-lockscreen was found, generate fallback centered lock dialog ledge
+            if is_locked && !lock_shm_found {
+                let lock_w = (screen_width * 0.35).clamp(380.0, 560.0);
+                let lock_h = 240.0;
+                let lock_x = (screen_width - lock_w) / 2.0;
+                let lock_y = (screen_height - lock_h) / 2.0;
+                let lock_frame = Rect {
+                    x: lock_x,
+                    y: screen_height - (lock_y + lock_h),
+                    width: lock_w,
+                    height: lock_h,
+                };
+                let lock_id = 0x710c_5c23; // "lockscr"
+                targets.insert(lock_id, (lock_frame, 16.0, true, -1000));
+            }
+
+            // Layer surfaces fallback / additional (only when not locked)
+            if !is_locked && self.config.track_layers
                 && let Some(layers_map) = self
                     .query("j/layers", &["layers", "-j"])
                     .and_then(|s| serde_json::from_str::<HashMap<String, HyprMonitorLayers>>(&s).ok())
             {
                 for (_mon, mon_layers) in layers_map {
-                    // Check overlay ("3"), then top ("2"), then bottom ("1")
                     for level_key in &["3", "2", "1"] {
                         if let Some(items) = mon_layers.levels.get(*level_key) {
                             for item in items {
-                                if let Some(ref ns) = item.namespace
-                                    && ns == "snowhush"
-                                {
+                                let ns = item.namespace.as_deref().unwrap_or("");
+                                if ns == "snowhush" || ns == "wallpaper-bg" {
                                     continue;
                                 }
                                 if item.w <= 10 || item.h <= 10 {
@@ -251,47 +498,33 @@ impl CompositorTracker for HyprlandTracker {
                                 let win_w = item.w as f32;
                                 let win_h = item.h as f32;
 
+                                if win_w >= screen_width * 0.98 && win_h >= screen_height * 0.98 {
+                                    continue;
+                                }
+
+                                let eff_top = if self.config.top_margin > 0.0 {
+                                    win_y.max(self.config.top_margin)
+                                } else {
+                                    win_y
+                                };
+                                let eff_bottom = win_y + win_h;
+
+                                if eff_bottom <= eff_top + 4.0 {
+                                    continue;
+                                }
+
+                                let eff_h = eff_bottom - eff_top;
                                 let frame = Rect {
                                     x: win_x,
-                                    y: screen_height - (win_y + win_h),
+                                    y: screen_height - eff_bottom,
                                     width: win_w,
-                                    height: win_h,
+                                    height: eff_h,
                                 };
-
-                                let room_above = win_y >= self.config.top_margin && frame.max_y() < screen_height;
-                                let on_screen = frame.max_x() > 0.0 && frame.min_x() < screen_width && frame.max_y() > 0.0;
-                                let fills_screen = frame.width * frame.height >= screen_width * screen_height * 0.9;
 
                                 let mut hasher = DefaultHasher::new();
                                 item.address.hash(&mut hasher);
                                 let id = hasher.finish() as isize;
-
-                                if room_above && on_screen && !fills_screen && frame.width >= 40.0 && frame.height >= 20.0 {
-                                    let radius = 8.0f32.min(frame.width / 2.0).min(frame.height / 2.0);
-                                    let region = Rect {
-                                        x: frame.x,
-                                        y: frame.max_y() - radius,
-                                        width: frame.width,
-                                        height: 30.0 + radius,
-                                    };
-                                    let blockers = frames_on_top
-                                        .iter()
-                                        .filter(|b| intersects(b, &region))
-                                        .copied()
-                                        .collect();
-
-                                    surfaces.push(WindowSurface {
-                                        id,
-                                        frame,
-                                        blockers,
-                                        corner_radius: radius,
-                                        corner_exponent: 2.0,
-                                    });
-                                }
-
-                                if !fills_screen {
-                                    frames_on_top.push(frame);
-                                }
+                                targets.insert(id, (frame, 12.0, true, -800));
                             }
                         }
                     }
@@ -309,6 +542,7 @@ impl CompositorTracker for HyprlandTracker {
                     let mut hasher = DefaultHasher::new();
                     client.address.hash(&mut hasher);
                     let id = hasher.finish() as isize;
+                    desktop_window_ids.insert(id);
 
                     if client.fullscreen > 0 {
                         current_fullscreen.insert(id);
@@ -319,74 +553,151 @@ impl CompositorTracker for HyprlandTracker {
                 }
                 self.previous_fullscreen = current_fullscreen;
 
-                // Sort by focus_history_id: lower id means focused more recently (on top)
-                clients.sort_by_key(|c| c.focus_history_id);
+                if !is_locked {
+                    clients.sort_by_key(|c| c.focus_history_id);
 
-                for client in clients {
-                    if !client.mapped || client.hidden {
-                        continue;
-                    }
-                    if !active_workspaces.is_empty() && !active_workspaces.contains(&client.workspace.id) {
-                        continue;
-                    }
-                    if client.size[0] <= 10 || client.size[1] <= 10 {
-                        continue;
-                    }
+                    for client in clients {
+                        if !client.mapped || client.hidden {
+                            continue;
+                        }
+                        if !client.pinned && !active_workspaces.is_empty() && !active_workspaces.contains(&client.workspace.id) {
+                            continue;
+                        }
+                        if client.fullscreen > 0 {
+                            continue;
+                        }
+                        if client.size[0] <= 10 || client.size[1] <= 10 {
+                            continue;
+                        }
 
-                    // Convert to bottom-up coordinates
-                    let win_x = client.at[0] as f32;
-                    let win_y = client.at[1] as f32;
-                    let win_w = client.size[0] as f32;
-                    let win_h = client.size[1] as f32;
+                        let win_x = client.at[0] as f32;
+                        let win_y = client.at[1] as f32;
+                        let win_w = client.size[0] as f32;
+                        let win_h = client.size[1] as f32;
 
-                    let frame = Rect {
-                        x: win_x,
-                        y: screen_height - (win_y + win_h),
-                        width: win_w,
-                        height: win_h,
-                    };
-
-                    let room_above = win_y >= self.config.top_margin && frame.max_y() < screen_height;
-                    let on_screen = frame.max_x() > 0.0 && frame.min_x() < screen_width && frame.max_y() > 0.0;
-                    let fills_screen = frame.width * frame.height >= screen_width * screen_height * 0.9;
-
-                    let mut hasher = DefaultHasher::new();
-                    client.address.hash(&mut hasher);
-                    let id = hasher.finish() as isize;
-
-                    if room_above && on_screen && !fills_screen && frame.width >= 80.0 && frame.height >= 40.0 {
-                        let radius = 12.0f32.min(frame.width / 2.0).min(frame.height / 2.0);
-                        let region = Rect {
-                            x: frame.x,
-                            y: frame.max_y() - radius,
-                            width: frame.width,
-                            height: 40.0 + radius,
+                        let eff_top = if self.config.top_margin > 0.0 {
+                            win_y.max(self.config.top_margin)
+                        } else {
+                            win_y
                         };
-                        let blockers = frames_on_top
-                            .iter()
-                            .filter(|b| intersects(b, &region))
-                            .copied()
-                            .collect();
+                        let eff_bottom = win_y + win_h;
 
-                        surfaces.push(WindowSurface {
-                            id,
-                            frame,
-                            blockers,
-                            corner_radius: radius,
-                            corner_exponent: 2.0,
-                        });
-                    }
+                        if eff_bottom <= eff_top + 4.0 {
+                            continue;
+                        }
 
-                    if !fills_screen {
-                        frames_on_top.push(frame);
+                        let frame = Rect {
+                            x: win_x,
+                            y: screen_height - eff_bottom,
+                            width: win_w,
+                            height: eff_bottom - eff_top,
+                        };
+
+                        let mut hasher = DefaultHasher::new();
+                        client.address.hash(&mut hasher);
+                        let id = hasher.finish() as isize;
+
+                        let radius = 12.0f32.min(win_w / 2.0).min(win_h / 2.0);
+                        targets.insert(id, (frame, radius, client.pinned, client.focus_history_id));
                     }
                 }
             }
-            self.cached_surfaces = surfaces;
+
+            state.desktop_window_ids = desktop_window_ids;
+
+            // Sync targets into animated_surfaces map
+            for (id, (target_frame, radius, is_static, focus_order)) in &targets {
+                if let Some(anim) = self.animated_surfaces.get_mut(id) {
+                    anim.target_frame = *target_frame;
+                    anim.corner_radius = *radius;
+                    anim.is_static = *is_static;
+                    anim.focus_order = *focus_order;
+                    anim.last_seen = now;
+                    anim.wants_removal = false;
+                } else {
+                    self.animated_surfaces.insert(*id, AnimatedSurface {
+                        id: *id,
+                        current_frame: *target_frame,
+                        target_frame: *target_frame,
+                        velocity: [0.0; 4],
+                        corner_radius: *radius,
+                        corner_exponent: 2.0,
+                        is_static: *is_static,
+                        focus_order: *focus_order,
+                        last_seen: now,
+                        wants_removal: false,
+                    });
+                }
+            }
+
+            self.animated_surfaces.retain(|id, _| targets.contains_key(id));
         }
 
-        state.surfaces = self.cached_surfaces.clone();
+        // EVERY FRAME: Smooth animation interpolation
+        let mut sorted_surfaces: Vec<&mut AnimatedSurface> = self.animated_surfaces.values_mut().collect();
+        sorted_surfaces.sort_by_key(|s| s.focus_order);
+
+        let mut frames_on_top: Vec<Rect> = Vec::new();
+        let mut surfaces_out = Vec::new();
+        let mut static_out = HashSet::new();
+
+        for anim in sorted_surfaces {
+            let time_constant = if anim.is_static { 0.14 } else { 0.11 };
+            smooth_damp_rect(&mut anim.current_frame, &mut anim.velocity, anim.target_frame, time_constant, dt);
+
+            let frame = anim.current_frame;
+            let on_screen = frame.max_x() > 0.0 && frame.min_x() < screen_width && frame.max_y() > 0.0 && frame.min_y() < screen_height;
+
+            if on_screen && frame.width >= 30.0 && frame.height >= 8.0 {
+                let radius = anim.corner_radius.min(frame.width / 2.0).min(frame.height / 2.0);
+                let region = Rect {
+                    x: frame.x,
+                    y: frame.max_y() - radius,
+                    width: frame.width,
+                    height: 30.0 + radius,
+                };
+                let blockers = frames_on_top
+                    .iter()
+                    .filter(|b| intersects(b, &region))
+                    .copied()
+                    .collect();
+
+                surfaces_out.push(WindowSurface {
+                    id: anim.id,
+                    frame,
+                    blockers,
+                    corner_radius: radius,
+                    corner_exponent: anim.corner_exponent,
+                });
+
+                if anim.is_static {
+                    static_out.insert(anim.id);
+                }
+
+                frames_on_top.push(frame);
+            }
+        }
+
+        // Cleanup surfaces that are dead and finished animating
+        self.animated_surfaces.retain(|_, anim| {
+            if anim.wants_removal {
+                let off_screen = anim.current_frame.max_y() <= 0.0 || anim.current_frame.min_y() >= screen_height;
+                let old = now.duration_since(anim.last_seen) > Duration::from_secs(1);
+                !off_screen && !old
+            } else {
+                true
+            }
+        });
+
+        state.surfaces = surfaces_out;
+        state.static_surface_ids = static_out;
+        state.is_locked = check_is_locked();
         state
+    }
+
+    fn update_config(&mut self, config: TrackerConfig) {
+        self.config = config;
+        self.last_surfaces_poll = Instant::now() - Duration::from_secs(1);
     }
 }
 
@@ -425,15 +736,22 @@ impl CompositorTracker for NiriTracker {
                     item.get("height").and_then(|v| v.as_f64()),
                 ) {
                     let win_y = y as f32;
-                    if win_y >= self.config.top_margin {
+                    let win_h = h as f32;
+                    let eff_top = if self.config.top_margin > 0.0 {
+                        win_y.max(self.config.top_margin)
+                    } else {
+                        win_y
+                    };
+                    let eff_bottom = win_y + win_h;
+                    if eff_bottom > eff_top + 4.0 {
                         let id = item.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as isize;
                         state.surfaces.push(WindowSurface {
                             id,
                             frame: Rect {
                                 x: x as f32,
-                                y: screen_height - (win_y + h as f32),
+                                y: screen_height - eff_bottom,
                                 width: w as f32,
-                                height: h as f32,
+                                height: eff_bottom - eff_top,
                             },
                             blockers: Vec::new(),
                             corner_radius: 12.0,
@@ -443,7 +761,12 @@ impl CompositorTracker for NiriTracker {
                 }
             }
         }
+        state.is_locked = check_is_locked();
         state
+    }
+
+    fn update_config(&mut self, config: TrackerConfig) {
+        self.config = config;
     }
 }
 
@@ -451,7 +774,10 @@ pub struct FallbackTracker;
 
 impl CompositorTracker for FallbackTracker {
     fn poll(&mut self, _screen_width: f32, _screen_height: f32) -> TrackedState {
-        TrackedState::default()
+        TrackedState {
+            is_locked: check_is_locked(),
+            ..Default::default()
+        }
     }
 }
 
@@ -464,3 +790,77 @@ pub fn create_tracker(config: TrackerConfig) -> Box<dyn CompositorTracker> {
         Box::new(FallbackTracker)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smooth_damp_rect_movement() {
+        let mut current = Rect { x: 100.0, y: 100.0, width: 400.0, height: 300.0 };
+        let mut velocity = [0.0; 4];
+        let target = Rect { x: 500.0, y: 200.0, width: 600.0, height: 400.0 };
+
+        // Step by 16ms
+        for _ in 0..10 {
+            smooth_damp_rect(&mut current, &mut velocity, target, 0.12, 0.016);
+            assert!(current.x > 100.0 && current.x < 500.0);
+            assert!(velocity[0] > 0.0);
+        }
+
+        // After 40 more steps (~640ms total), should be at target
+        for _ in 0..40 {
+            smooth_damp_rect(&mut current, &mut velocity, target, 0.12, 0.016);
+        }
+        assert!((current.x - target.x).abs() < 0.5);
+        assert!((current.y - target.y).abs() < 0.5);
+        assert!((current.width - target.width).abs() < 0.5);
+        assert!((current.height - target.height).abs() < 0.5);
+    }
+
+    #[test]
+    fn test_shm_ledge_deserialization() {
+        let json = r#"[
+            {"id":"qs-topbar","x":4,"y":4,"width":1592,"height":40,"radius":12,"visible":true},
+            {"id":"qs-dock","x":644,"y":920,"width":312,"height":68,"radius":16,"visible":false}
+        ]"#;
+        let ledges: Vec<ShmLedge> = serde_json::from_str(json).unwrap();
+        assert_eq!(ledges.len(), 2);
+        assert_eq!(ledges[0].id, "qs-topbar");
+        assert!(ledges[0].visible);
+        assert_eq!(ledges[1].id, "qs-dock");
+        assert!(!ledges[1].visible);
+    }
+
+    #[test]
+    fn test_top_margin_filtering_logic() {
+        let top_margin = 48.0;
+
+        // Top bar at y=4, height=40 (ends at 44 <= 48) -> should be excluded
+        let bar_y = 4.0f32;
+        let bar_h = 40.0f32;
+        let eff_top = bar_y.max(top_margin);
+        let eff_bottom = bar_y + bar_h;
+        assert!(eff_bottom <= eff_top + 4.0);
+
+        // Window at y=30, height=200 -> should be trimmed to start at 48
+        let win_y = 30.0f32;
+        let win_h = 200.0f32;
+        let eff_top = win_y.max(top_margin);
+        let eff_bottom = win_y + win_h;
+        assert!(eff_bottom > eff_top + 4.0);
+        assert_eq!(eff_top, 48.0);
+        assert_eq!(eff_bottom - eff_top, 182.0);
+
+        // Dock at bottom y=824, height=68 -> completely untouched
+        let dock_y = 824.0f32;
+        let dock_h = 68.0f32;
+        let eff_top = dock_y.max(top_margin);
+        let eff_bottom = dock_y + dock_h;
+        assert!(eff_bottom > eff_top + 4.0);
+        assert_eq!(eff_top, 824.0);
+        assert_eq!(eff_bottom - eff_top, 68.0);
+    }
+}
+
+

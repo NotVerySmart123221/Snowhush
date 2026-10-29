@@ -10,6 +10,7 @@ use crate::layer::SnowLayer;
 pub type WindowId = isize;
 
 pub const COLUMN_WIDTH: f32 = 2.0;
+pub const SIDE_MARGIN: f32 = 400.0;
 const GROUND_DEPTH: f32 = 40.0;
 const LEDGE_DEPTH: f32 = 14.0;
 const THAW_DEPTH: f32 = 8.0;
@@ -132,6 +133,12 @@ pub struct WindowSurface {
     pub corner_exponent: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct WindowWake {
+    pub frame: Rect,
+    pub velocity: V2,
+}
+
 #[derive(Clone, Copy)]
 struct Flake {
     position: V2,
@@ -145,6 +152,7 @@ struct Flake {
     sway_rate: f32,
     sway_amount: f32,
     settles: bool,
+    skipped_layer: usize,
     /// Scales the snow it leaves where it lands.
     mass: f32,
     tint: [f32; 3],
@@ -212,6 +220,12 @@ struct Air {
     random: Random,
     clock: f64,
     strength: f32,
+    static_wind: f32,
+    window_leak: f32,
+    pub motion_shed: f32,
+    pub cursor_force: f32,
+    pub speed_factor: f32,
+    pub sway_factor: f32,
     cursor: Option<V2>,
     cursor_velocity: V2,
     held_layers: Vec<usize>,
@@ -222,6 +236,10 @@ struct Air {
     /// Snow released while the air is full, laid straight onto the ground at the end of the step.
     overflow: Vec<(f32, f32)>,
     gust: Option<Gust>,
+    pub workspace_wind: f32,
+    pub workspace_wind_dir: f32,
+    pub workspace_wind_start: f64,
+    pub workspace_wind_until: f64,
 }
 
 pub struct SnowSimulation {
@@ -232,7 +250,16 @@ pub struct SnowSimulation {
     density: f32,
     pub thaws: bool,
     pub thaw_rate_multiplier: f32,
+    pub wind_accel: bool,
+    pub wind_factor: f32,
+    pub static_wind: f32,
+    pub window_leak: f32,
+    pub motion_shed: f32,
+    pub cursor_force: f32,
+    pub speed_factor: f32,
+    pub sway_factor: f32,
     pub accumulates: bool,
+    pub windows_solid: bool,
     /// Side edges, left and right, with no display past them: a window slid past one leaves its snow heaped against the edge.
     pub walls: (bool, bool),
     /// Keeps the snowfall from starting until a scattered window's snow first reaches the bottom of the screen.
@@ -247,6 +274,9 @@ pub struct SnowSimulation {
     dormant: HashMap<WindowId, SnowLayer>,
     /// Windows that went off screen without a word yet on why; a desktop switch keeps their snow, anything else drops it.
     parking: Vec<(WindowId, SnowLayer, f64)>,
+    window_frames: HashMap<WindowId, Rect>,
+    pub active_wakes: Vec<WindowWake>,
+    pub workspace_transition_until: f64,
     space_changed_at: f64,
     target_flakes: usize,
     strength_target: f32,
@@ -266,7 +296,16 @@ impl SnowSimulation {
             density: 1.0,
             thaws: false,
             thaw_rate_multiplier: 1.0,
+            wind_accel: true,
+            wind_factor: 1.0,
+            static_wind: 20.0,
+            window_leak: 0.35,
+            motion_shed: 1.0,
+            cursor_force: 1.0,
+            speed_factor: 1.0,
+            sway_factor: 1.0,
             accumulates: true,
+            windows_solid: true,
             walls: (false, false),
             snowfall_held: false,
             snowfall_released: false,
@@ -275,6 +314,9 @@ impl SnowSimulation {
             ids: vec![0],
             dormant: HashMap::new(),
             parking: Vec::new(),
+            window_frames: HashMap::new(),
+            active_wakes: Vec::new(),
+            workspace_transition_until: -10.0,
             space_changed_at: -10.0,
             target_flakes: 0,
             strength_target: 1.0,
@@ -286,6 +328,12 @@ impl SnowSimulation {
                 random: Random::new(),
                 clock: 0.0,
                 strength: 1.0,
+                static_wind: 20.0,
+                window_leak: 0.35,
+                motion_shed: 1.0,
+            cursor_force: 1.0,
+            speed_factor: 1.0,
+            sway_factor: 1.0,
                 cursor: None,
                 cursor_velocity: V2::ZERO,
                 held_layers: Vec::new(),
@@ -295,6 +343,10 @@ impl SnowSimulation {
                 last_cursor_push: -10.0,
                 overflow: Vec::new(),
                 gust: None,
+                workspace_wind: 0.0,
+                workspace_wind_dir: 0.0,
+                workspace_wind_start: -10.0,
+                workspace_wind_until: -10.0,
             },
         };
         simulation.update_target();
@@ -307,6 +359,11 @@ impl SnowSimulation {
 
     pub fn height(&self) -> f32 {
         self.height
+    }
+
+    #[cfg(test)]
+    pub fn layers_mut(&mut self) -> &mut [SnowLayer] {
+        &mut self.layers
     }
 
     pub fn pace(&self) -> Pace {
@@ -367,6 +424,12 @@ impl SnowSimulation {
     /// Returns whether anything visible changed.
     pub fn step(&mut self, dt: f32, cursor: V2) -> bool {
         self.air.clock += dt as f64;
+        self.air.static_wind = self.static_wind;
+        self.air.window_leak = self.window_leak;
+        self.air.motion_shed = self.motion_shed;
+        self.air.cursor_force = self.cursor_force;
+        self.air.speed_factor = self.speed_factor;
+        self.air.sway_factor = self.sway_factor;
         let was_moving = self.sprite_count() > 0;
         self.air.heights_changed = false;
 
@@ -380,6 +443,7 @@ impl SnowSimulation {
             self.air.confine(ledge, li, self.width, self.walls);
         }
         self.blow(dt);
+        self.erode_snowdrifts_by_wind(dt);
         self.advance_flakes(dt);
         self.advance_grains(dt);
         self.air.advance_motes(dt);
@@ -395,7 +459,10 @@ impl SnowSimulation {
         }
         let air = &self.air;
         // Only a cursor that actually displaces snow needs the full rate; one passing near it or resting in it changes nothing.
-        let pushed = air.clock - air.last_window_motion < 0.6 || air.clock - air.last_cursor_push < 0.3 || air.gust.is_some();
+        let pushed = air.clock - air.last_window_motion < 0.6
+            || air.clock - air.last_cursor_push < 0.3
+            || air.gust.is_some()
+            || air.clock < self.workspace_transition_until;
         // The steady trickle off window corners is a few tiny grains at a time; they read fine at the calm rate.
         let flying = air.grains.len() > 24 || air.clock < self.scattered_until;
         self.pace = if pushed {
@@ -407,6 +474,7 @@ impl SnowSimulation {
         };
         let changed = was_moving || self.sprite_count() > 0 || self.air.heights_changed || self.air.windows_changed;
         self.air.windows_changed = false;
+        self.active_wakes.clear();
         changed
     }
 
@@ -490,6 +558,7 @@ impl SnowSimulation {
                 sway_rate: random.range(0.6, 1.8),
                 sway_amount: random.range(8.0, 24.0),
                 settles: true,
+                skipped_layer: 0,
                 mass: 0.06,
                 tint: piece.color,
                 tint_amount: 1.0,
@@ -522,6 +591,8 @@ impl SnowSimulation {
         }
         let known: HashMap<WindowId, usize> = self.ids.iter().enumerate().skip(1).map(|(li, &id)| (id, li)).collect();
         let mut seen = HashSet::new();
+        let mut active_movers = Vec::new();
+
         for surface in surfaces {
             let left = surface.frame.min_x() + LEDGE_INSET;
             let top = surface.frame.max_y();
@@ -531,6 +602,22 @@ impl SnowSimulation {
             }
             let columns = columns as usize;
             seen.insert(surface.id);
+
+            if let Some(&old_frame) = self.window_frames.get(&surface.id) {
+                if old_frame != surface.frame {
+                    let dt = interval.max(1.0 / 120.0);
+                    let velocity = V2::new(surface.frame.x - old_frame.x, surface.frame.y - old_frame.y) / dt;
+                    let speed = velocity.length();
+                    let min_x_diff = (surface.frame.min_x() - old_frame.min_x()).abs() / dt;
+                    let max_x_diff = (surface.frame.max_x() - old_frame.max_x()).abs() / dt;
+                    let min_y_diff = (surface.frame.min_y() - old_frame.min_y()).abs() / dt;
+                    let max_y_diff = (surface.frame.max_y() - old_frame.max_y()).abs() / dt;
+                    if speed > 15.0 || min_x_diff > 15.0 || max_x_diff > 15.0 || min_y_diff > 15.0 || max_y_diff > 15.0 {
+                        active_movers.push((surface.id, old_frame, surface.frame, surface.corner_radius, velocity));
+                    }
+                }
+            }
+            self.window_frames.insert(surface.id, surface.frame);
 
             let li = if let Some(&li) = known.get(&surface.id) {
                 let ledge = &mut self.layers[li];
@@ -584,6 +671,168 @@ impl SnowSimulation {
         {
             self.dormant.remove(&stale);
         }
+        self.window_frames.retain(|id, _| seen.contains(id));
+
+        self.active_wakes.clear();
+        for (_, _, new_frame, _, velocity) in &active_movers {
+            let speed = velocity.length();
+            if speed > 20.0 {
+                self.active_wakes.push(WindowWake {
+                    frame: *new_frame,
+                    velocity: *velocity,
+                });
+            }
+        }
+
+        let known_now: HashMap<WindowId, usize> = self.ids.iter().enumerate().skip(1).map(|(li, &id)| (id, li)).collect();
+        if !active_movers.is_empty() {
+            self.air.last_window_motion = self.air.clock;
+        }
+        for (mover_id, old_frame, new_frame, corner_radius, velocity) in active_movers {
+            let mover_li = known_now.get(&mover_id).copied();
+            self.plow_with_window(mover_li, old_frame, new_frame, corner_radius, velocity);
+        }
+    }
+
+    fn plow_with_window(
+        &mut self,
+        mover_li: Option<usize>,
+        old_frame: Rect,
+        new_frame: Rect,
+        corner_radius: f32,
+        velocity: V2,
+    ) {
+        if !self.windows_solid {
+            return;
+        }
+        let speed = velocity.length().min(3000.0);
+        let spray_share = (smoothstep(15.0, 300.0, speed) * 0.75).max(0.35);
+
+        let swept_min_x = old_frame.min_x().min(new_frame.min_x());
+        let swept_max_x = old_frame.max_x().max(new_frame.max_x());
+        let swept_min_y = old_frame.min_y().min(new_frame.min_y());
+        let swept_max_y = old_frame.max_y().max(new_frame.max_y());
+
+        for li in 0..self.layers.len() {
+            if Some(li) == mover_li {
+                continue;
+            }
+            let layer = &mut self.layers[li];
+            let base = layer.base();
+            let layer_top = base.y + layer.top;
+            let layer_bed = base.y - layer.bed_depth;
+            let layer_min_x = base.x;
+            let layer_max_x = base.x + layer.width();
+
+            if swept_max_x < layer_min_x || swept_min_x > layer_max_x {
+                continue;
+            }
+            if swept_min_y > layer_top || swept_max_y < layer_bed {
+                continue;
+            }
+
+            let count = layer.count();
+            if count == 0 {
+                continue;
+            }
+
+            let col_start = (((swept_min_x - base.x) / COLUMN_WIDTH).floor() as i64).clamp(0, count as i64 - 1) as usize;
+            let col_end = (((swept_max_x - base.x) / COLUMN_WIDTH).ceil() as i64).clamp(0, count as i64 - 1) as usize;
+            if col_start > col_end {
+                continue;
+            }
+
+            let mut pushed_left = 0.0;
+            let mut pushed_right = 0.0;
+            let mut any_removed = false;
+
+            for col in col_start..=col_end {
+                if !layer.visible[col] {
+                    continue;
+                }
+                let h = layer.heights[col];
+                if h <= 0.05 {
+                    continue;
+                }
+                let x = layer.center_x(col);
+                let bed_y = layer.floor(col);
+                let surface_y = bed_y + h;
+
+                let progress = if swept_max_x > swept_min_x {
+                    ((x - swept_min_x) / (swept_max_x - swept_min_x)).clamp(0.0, 1.0)
+                } else {
+                    0.5
+                };
+                let mut win_bottom = old_frame.min_y() + (new_frame.min_y() - old_frame.min_y()) * progress;
+
+                if corner_radius > 0.0 && x >= new_frame.min_x() && x <= new_frame.max_x() {
+                    if x < new_frame.min_x() + corner_radius {
+                        let dx = (new_frame.min_x() + corner_radius) - x;
+                        let lift = corner_radius - (corner_radius * corner_radius - dx * dx).max(0.0).sqrt();
+                        win_bottom += lift;
+                    } else if x > new_frame.max_x() - corner_radius {
+                        let dx = x - (new_frame.max_x() - corner_radius);
+                        let lift = corner_radius - (corner_radius * corner_radius - dx * dx).max(0.0).sqrt();
+                        win_bottom += lift;
+                    }
+                }
+
+                if win_bottom < surface_y && swept_max_y >= bed_y {
+                    let allowed_h = (win_bottom - bed_y).max(0.0);
+                    if allowed_h < h {
+                        let removed = h - allowed_h;
+                        layer.set(col, allowed_h);
+                        any_removed = true;
+
+                        let area = removed * COLUMN_WIDTH;
+                        let sprayed = if spray_share > 0.0 {
+                            self.air.emit_window_plow(
+                                area * spray_share,
+                                V2::new(x, win_bottom),
+                                velocity + V2::new(0.0, 30.0),
+                            )
+                        } else {
+                            0.0
+                        };
+
+                        let leftover = area - sprayed;
+                        if velocity.x > 15.0 {
+                            pushed_right += leftover;
+                        } else if velocity.x < -15.0 {
+                            pushed_left += leftover;
+                        } else {
+                            let center_x = (new_frame.min_x() + new_frame.max_x()) * 0.5;
+                            if x < center_x {
+                                pushed_left += leftover;
+                            } else {
+                                pushed_right += leftover;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if any_removed {
+                self.air.heights_changed = true;
+                self.air.last_window_motion = self.air.clock;
+                layer.agitation = (layer.agitation + 12.0).min(50.0);
+
+                if pushed_left > 0.0 {
+                    let deposit_x = new_frame.min_x() - COLUMN_WIDTH * 2.0;
+                    let missed = layer.deposit(pushed_left, deposit_x, true);
+                    if missed > 0.0 {
+                        self.air.drop_past(layer, missed, deposit_x, -speed.min(100.0));
+                    }
+                }
+                if pushed_right > 0.0 {
+                    let deposit_x = new_frame.max_x() + COLUMN_WIDTH * 2.0;
+                    let missed = layer.deposit(pushed_right, deposit_x, true);
+                    if missed > 0.0 {
+                        self.air.drop_past(layer, missed, deposit_x, speed.min(100.0));
+                    }
+                }
+            }
+        }
     }
 
     fn unpark(&mut self, id: WindowId) -> Option<SnowLayer> {
@@ -611,18 +860,24 @@ impl SnowSimulation {
         let center = point + CURSOR_OFFSET;
         let Some(previous) = self.air.cursor.replace(center) else { return };
 
-        let delta = center - previous;
-        let mut velocity = delta / dt.max(1.0 / 240.0);
+        let offscreen = previous.x < -500.0 || previous.y < -500.0 || center.x < -500.0 || center.y < -500.0;
+        let delta = if offscreen { V2::ZERO } else { center - previous };
+        let mut velocity = if offscreen { V2::ZERO } else { delta / dt.max(1.0 / 240.0) };
         let speed = velocity.length();
         if speed > 3000.0 {
             velocity *= 3000.0 / speed;
         }
-        self.air.cursor_velocity += (velocity - self.air.cursor_velocity) * 0.5;
+        self.air.cursor_velocity = if offscreen { V2::ZERO } else { self.air.cursor_velocity + (velocity - self.air.cursor_velocity) * 0.5 };
 
-        let low = center.y.min(previous.y) - CURSOR_RADIUS;
-        let high = center.y.max(previous.y) + CURSOR_RADIUS;
-        let left = center.x.min(previous.x) - CURSOR_RADIUS;
-        let right = center.x.max(previous.x) + CURSOR_RADIUS;
+        if self.cursor_force <= 0.01 || offscreen {
+            return;
+        }
+
+        let radius = CURSOR_RADIUS * (0.6 + 0.4 * self.cursor_force.sqrt());
+        let low = center.y.min(previous.y) - radius;
+        let high = center.y.max(previous.y) + radius;
+        let left = center.x.min(previous.x) - radius;
+        let right = center.x.max(previous.x) + radius;
         let touched: Vec<usize> = (0..self.layers.len())
             .filter(|&li| {
                 let layer = &self.layers[li];
@@ -645,7 +900,7 @@ impl SnowSimulation {
             }
             return;
         }
-        let steps = (distance / (CURSOR_RADIUS * 0.5)) as usize + 1;
+        let steps = (distance / (radius * 0.5)) as usize + 1;
         for step in 1..=steps {
             let position = previous + delta * (step as f32 / steps as f32);
             for &li in &touched {
@@ -660,14 +915,17 @@ impl SnowSimulation {
         let wind = self.air.breeze();
         let follow = (dt * 1.2).min(1.0);
         let settle = (dt * 1.6).min(1.0);
-        let wake_radius: f32 = 80.0;
-        let mut wake_velocity = self.air.cursor_velocity;
+        let base_wake_radius: f32 = 80.0;
+        let wake_radius = base_wake_radius * (0.6 + 0.4 * self.cursor_force.sqrt());
+        let mut wake_velocity = self.air.cursor_velocity * self.cursor_force;
+        let max_speed = (500.0 * self.cursor_force.max(0.2)).clamp(100.0, 3000.0);
         let wake_speed = wake_velocity.length();
-        if wake_speed > 500.0 {
-            wake_velocity *= 500.0 / wake_speed;
+        if wake_speed > max_speed {
+            wake_velocity *= max_speed / wake_speed;
         }
         let wake_center = self.air.cursor.unwrap_or(V2::new(-10_000.0, -10_000.0));
-        let wake_active = wake_speed > 20.0;
+        let wake_active = self.cursor_force > 0.01 && wake_speed > 15.0;
+        let speed_factor = smoothstep(15.0, 150.0, wake_speed);
 
         let mut i = self.air.flakes.len();
         while i > 0 {
@@ -679,13 +937,50 @@ impl SnowSimulation {
             } else {
                 flake.velocity.x += (wind * (0.35 + 0.65 * flake.depth) - flake.velocity.x) * follow;
             }
-            flake.velocity.y += (-flake.fall_speed - flake.velocity.y) * settle;
+            flake.velocity.y += (-flake.fall_speed * self.air.speed_factor - flake.velocity.y) * settle;
 
             if wake_active {
-                let distance_squared = (flake.position - wake_center).length_squared();
-                if distance_squared < wake_radius * wake_radius {
-                    let falloff = 1.0 - distance_squared.sqrt() / wake_radius;
-                    flake.velocity += (wake_velocity - flake.velocity) * (falloff * falloff * 4.0 * dt).min(1.0);
+                let diff = flake.position - wake_center;
+                let distance_squared = diff.length_squared();
+                if distance_squared < wake_radius * wake_radius && distance_squared > 0.01 {
+                    let distance = distance_squared.sqrt();
+                    let falloff = 1.0 - distance / wake_radius;
+                    let drag = (wake_velocity - flake.velocity) * (falloff * falloff * 5.0 * self.cursor_force * dt).min(1.0);
+                    let push = (diff / distance) * (falloff * 240.0 * speed_factor * self.cursor_force * dt);
+                    flake.velocity += drag + push;
+                }
+            }
+
+            for wake in &self.active_wakes {
+                let speed = wake.velocity.length();
+                let wake_radius = 80.0 * (0.6 + 0.4 * self.cursor_force.sqrt());
+
+                if flake.position.x < wake.frame.min_x() - wake_radius
+                    || flake.position.x > wake.frame.max_x() + wake_radius
+                    || flake.position.y < wake.frame.min_y() - wake_radius
+                    || flake.position.y > wake.frame.max_y() + wake_radius
+                {
+                    continue;
+                }
+
+                let clamped_x = flake.position.x.clamp(wake.frame.min_x(), wake.frame.max_x());
+                let clamped_y = flake.position.y.clamp(wake.frame.min_y(), wake.frame.max_y());
+                let diff = flake.position - V2::new(clamped_x, clamped_y);
+                let dist_sq = diff.length_squared();
+
+                if dist_sq < wake_radius * wake_radius {
+                    let dist = dist_sq.sqrt();
+                    let falloff = 1.0 - dist / wake_radius;
+                    let drag = (wake.velocity - flake.velocity) * (falloff * falloff * 5.0 * self.cursor_force * dt).min(1.0);
+                    let push_dir = if dist > 0.01 {
+                        diff / dist
+                    } else if speed > 1.0 {
+                        wake.velocity / speed
+                    } else {
+                        V2::new(0.0, 1.0)
+                    };
+                    let push = push_dir * (falloff * 240.0 * self.cursor_force * dt);
+                    flake.velocity += drag + push;
                 }
             }
 
@@ -694,7 +989,7 @@ impl SnowSimulation {
             if flake.phase > PHASE_WRAP {
                 flake.phase -= PHASE_WRAP;
             }
-            let sway = (flake.phase.cos() + 0.3 * (flake.phase * 2.3).cos()) * flake.sway_amount;
+            let sway = (flake.phase.cos() + 0.3 * (flake.phase * 2.3).cos()) * flake.sway_amount * self.air.sway_factor;
             let flutter = 1.0 + 0.12 * (flake.phase * 1.3).sin();
             if flake.tint_amount > 0.0 {
                 flake.tint_amount = (flake.tint_amount - dt * 1.3).max(0.0);
@@ -703,35 +998,42 @@ impl SnowSimulation {
             flake.position.x += (flake.velocity.x + sway) * dt;
             flake.position.y += flake.velocity.y * flutter * dt;
 
-            if flake.blown != 0.0 && (flake.position.x < -30.0 || flake.position.x > self.width + 30.0) {
-                self.air.flakes.swap_remove(i);
+            if flake.blown == 0.0 {
+                if flake.position.x < -30.0 {
+                    flake.position.x += self.width + 60.0;
+                } else if flake.position.x > self.width + 30.0 {
+                    flake.position.x -= self.width + 60.0;
+                }
+            } else if flake.position.x < -30.0 || flake.position.x > self.width + 30.0 {
+                self.recycle(i);
                 continue;
-            }
-            if flake.position.x < -30.0 {
-                flake.position.x += self.width + 60.0;
-            } else if flake.position.x > self.width + 30.0 {
-                flake.position.x -= self.width + 60.0;
             }
 
             if flake.settles && self.accumulates && flake.blown == 0.0 {
-                if let Some((li, column)) = landing(&self.layers, flake.position.x, previous_y, flake.position.y) {
-                    if self.snowfall_held && flake.mass < 1.0 && li == 0 {
-                        self.snowfall_held = false;
-                        self.snowfall_released = true;
-                        self.update_target();
+                let hit = landing(&self.layers, flake.position.x, previous_y, flake.position.y, flake.skipped_layer, self.windows_solid);
+                if let Some((li, column)) = hit {
+                    if li > 0 && self.window_leak > 0.0 && self.air.random.next() < self.window_leak {
+                        // Flake slips past this ledge with probability window_leak and continues falling!
+                        flake.skipped_layer = li;
+                        flake.position.y = (flake.position.y - flake.size * 0.5).min(self.layers[li].surface(column) - 0.5);
+                    } else {
+                        if self.snowfall_held && flake.mass < 1.0 && li == 0 {
+                            self.snowfall_held = false;
+                            self.snowfall_released = true;
+                            self.update_target();
+                        }
+                        let layer = &mut self.layers[li];
+                        let amount = flake.size * flake.size * DEPOSITION * flake.mass * layer.fill(column);
+                        layer.deposit(amount, flake.position.x, true);
+                        self.air.heights_changed = true;
+                        self.recycle(i);
+                        continue;
                     }
-                    let layer = &mut self.layers[li];
-                    let amount = flake.size * flake.size * DEPOSITION * flake.mass * layer.fill(column);
-                    layer.deposit(amount, flake.position.x, true);
-                    self.air.heights_changed = true;
-                    self.recycle(i);
-                    continue;
                 }
             } else if flake.position.y < -flake.size * 2.0 {
                 self.recycle(i);
                 continue;
             }
-
             self.air.flakes[i] = flake;
         }
     }
@@ -757,11 +1059,46 @@ impl SnowSimulation {
             }
             grain.position += grain.velocity * dt;
 
-            if grain.position.x < -10.0 || grain.position.x > self.width + 10.0 || grain.position.y < -10.0 {
+            for wake in &self.active_wakes {
+                let wake_radius = 60.0;
+                if grain.position.x < wake.frame.min_x() - wake_radius
+                    || grain.position.x > wake.frame.max_x() + wake_radius
+                    || grain.position.y < wake.frame.min_y() - wake_radius
+                    || grain.position.y > wake.frame.max_y() + wake_radius
+                {
+                    continue;
+                }
+
+                let clamped_x = grain.position.x.clamp(wake.frame.min_x(), wake.frame.max_x());
+                let clamped_y = grain.position.y.clamp(wake.frame.min_y(), wake.frame.max_y());
+                let diff = grain.position - V2::new(clamped_x, clamped_y);
+                let dist_sq = diff.length_squared();
+
+                if dist_sq < wake_radius * wake_radius {
+                    let dist = dist_sq.sqrt();
+                    let falloff = 1.0 - dist / wake_radius;
+                    let drag = (wake.velocity - grain.velocity) * (falloff * falloff * 5.0 * dt).min(1.0);
+                    let push_dir = if dist > 0.01 { diff / dist } else { V2::new(0.0, 1.0) };
+                    grain.velocity += drag + push_dir * (falloff * 200.0 * dt);
+                }
+            }
+
+            if !grain.blown {
+                if grain.position.x < -30.0 {
+                    grain.position.x += self.width + 60.0;
+                } else if grain.position.x > self.width + 30.0 {
+                    grain.position.x -= self.width + 60.0;
+                }
+            } else if grain.position.x < -30.0 || grain.position.x > self.width + 30.0 {
                 self.air.grains.swap_remove(i);
+                continue;
+            }
+            if grain.position.y < -10.0 {
+                self.air.grains.swap_remove(i);
+                continue;
             } else if !grain.blown
                 && grain.velocity.y <= 0.0
-                && let Some((li, _)) = landing(&self.layers, grain.position.x, previous_y, grain.position.y)
+                && let Some((li, _)) = landing(&self.layers, grain.position.x, previous_y, grain.position.y, 0, self.windows_solid)
             {
                 let layer = &mut self.layers[li];
                 if grain.lump > 0.0 {
@@ -851,9 +1188,26 @@ impl SnowSimulation {
 
     /// Sweeps snow off window ledges in the direction of workspace transition,
     /// bursting it into powder and clouds, and accelerating airborne flakes.
-    pub fn sweep_window_ledges(&mut self, direction: f32) {
+    /// Does not sweep surfaces in `static_ids` (e.g. Quickshell layers, pinned windows).
+    /// On window ledges: 100% of snow flies away into particles and clouds (drifts do not remain).
+    /// On the ground: snowdrifts are partially swept (~12-28%), shedding loose powder.
+    pub fn sweep_window_ledges(&mut self, direction: f32, distance: f32, static_ids: &HashSet<WindowId>) {
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
+        let duration = (0.8 + 0.4 * distance.max(1.0)).min(2.5) as f64;
+        self.workspace_transition_until = self.air.clock + duration;
+        self.air.workspace_wind_start = self.air.clock;
+        self.air.workspace_wind_until = self.air.clock + duration;
+        self.air.workspace_wind_dir = dir;
+        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.wind_factor.max(0.5);
+        self.air.workspace_wind = sweep_speed;
+
+        // On window ledges: 100% of snow flies away ("весь снег улетает сугробы не остаются"),
+        // swept into flying grains and cloud motes just like a cursor snowplow!
         for li in 1..self.layers.len() {
+            let id = self.ids[li];
+            if static_ids.contains(&id) {
+                continue;
+            }
             let layer = &mut self.layers[li];
             let mut dust = 0.0;
             for i in 0..layer.count() {
@@ -863,26 +1217,62 @@ impl SnowSimulation {
                 }
                 let x = layer.center_x(i);
                 let surface = layer.surface(i);
-                dust += h * layer.column_width;
+                let area = h * layer.column_width;
+                dust += area;
                 while dust >= 3.0 {
-                    self.air.lift(V2::new(x, surface), dir);
+                    self.air.plow_sweep_snow(3.0, V2::new(x, surface), dir, sweep_speed);
                     dust -= 3.0;
                 }
                 layer.set(i, 0.0);
             }
+            if dust > 0.5 {
+                let x = layer.base().x + layer.width() * 0.5;
+                let surface = layer.base().y;
+                self.air.plow_sweep_snow(dust, V2::new(x, surface), dir, sweep_speed);
+            }
         }
-        for flake in &mut self.air.flakes {
-            let random = &mut self.air.random;
-            flake.velocity.x += dir * random.range(500.0, 1100.0);
-            flake.velocity.y += random.range(40.0, 150.0);
+
+        // On the ground: snowdrifts are partially swept ("сугробы могут немного сметаться")
+        // shedding loose top snow (12-28%) into flying grains and cloud motes
+        let ground_sweep_fraction = (0.18 + 0.05 * (distance - 1.0).max(0.0)).clamp(0.12, 0.28) * self.wind_factor.clamp(0.2, 2.0);
+        let ground = &mut self.layers[0];
+        let mut ground_dust = 0.0;
+        for i in 0..ground.count() {
+            let h = ground.heights[i];
+            if h <= 0.05 {
+                continue;
+            }
+            let loss = (h * ground_sweep_fraction).min(h);
+            let x = ground.center_x(i);
+            let surface = ground.surface(i);
+            let area = loss * ground.column_width;
+            ground_dust += area;
+            while ground_dust >= 3.5 {
+                self.air.plow_sweep_snow(3.5, V2::new(x, surface), dir, sweep_speed);
+                ground_dust -= 3.5;
+            }
+            ground.set(i, h - loss);
+        }
+
+        if self.wind_accel {
+            let dist_multiplier = (0.2 + 0.4 * distance.max(1.0)).min(4.5);
+            let power = dist_multiplier * self.wind_factor.max(0.0);
+            for flake in &mut self.air.flakes {
+                let random = &mut self.air.random;
+                flake.velocity.x += dir * random.range(300.0, 700.0) * power;
+                flake.velocity.y += random.range(20.0, 80.0) * power;
+            }
         }
         self.air.heights_changed = true;
     }
 
     /// Sweeps snow off window ledges AND the ground.
-    pub fn sweep_all(&mut self, direction: f32) {
+    pub fn sweep_all(&mut self, direction: f32, distance: f32, static_ids: &HashSet<WindowId>) {
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
-        self.sweep_window_ledges(dir);
+        self.sweep_window_ledges(dir, distance, static_ids);
+        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.wind_factor.max(0.5);
+        // sweep_all applies an additional sweep on ground for more aggressive clearing if requested
+        let sweep_fraction = (0.35 + 0.10 * (distance - 1.0).max(0.0)).clamp(0.25, 0.60) * self.wind_factor.clamp(0.2, 2.0);
         let ground = &mut self.layers[0];
         let mut dust = 0.0;
         for i in 0..ground.count() {
@@ -890,16 +1280,66 @@ impl SnowSimulation {
             if h <= 0.05 {
                 continue;
             }
+            let loss = (h * sweep_fraction).min(h);
             let x = ground.center_x(i);
             let surface = ground.surface(i);
-            dust += h * ground.column_width;
-            while dust >= 4.0 {
-                self.air.lift(V2::new(x, surface), dir);
-                dust -= 4.0;
+            let area = loss * ground.column_width;
+            dust += area;
+            while dust >= 3.5 {
+                self.air.plow_sweep_snow(3.5, V2::new(x, surface), dir, sweep_speed);
+                dust -= 3.5;
             }
-            ground.set(i, 0.0);
+            ground.set(i, h - loss);
         }
         self.air.heights_changed = true;
+    }
+
+    /// Continuous aerodynamic wind erosion on snowdrifts.
+    /// When wind (including static_wind and workspace wind) exceeds the erosion threshold (45 px/s),
+    /// surface snow is gradually eroded and swept off into airborne powder (lift grains and motes).
+    fn erode_snowdrifts_by_wind(&mut self, dt: f32) {
+        let wind = self.air.wind_speed();
+        let wind_abs = wind.abs();
+        let threshold = 45.0;
+        if wind_abs <= threshold {
+            return;
+        }
+        let excess = wind_abs - threshold;
+        let wind_dir = if wind >= 0.0 { 1.0 } else { -1.0 };
+        let erosion_rate = (0.00025 * excess.min(600.0) * self.wind_factor.clamp(0.2, 2.0)) * dt;
+        if erosion_rate <= 0.000001 {
+            return;
+        }
+
+        let is_ws = self.air.clock < self.workspace_transition_until;
+
+        for (li, layer) in self.layers.iter_mut().enumerate() {
+            let layer_factor = if li == 0 { 0.6 } else { 1.0 };
+            let rate = (erosion_rate * layer_factor).min(0.25);
+            let mut dust = 0.0;
+            let count = layer.count();
+            for i in 0..count {
+                let h = layer.heights[i];
+                if h <= 0.5 {
+                    continue;
+                }
+                let loss = (h * rate).min(h - 0.2);
+                if loss > 0.001 {
+                    layer.set(i, h - loss);
+                    self.air.heights_changed = true;
+                    if layer.visible[i] {
+                        dust += loss * layer.column_width;
+                        let threshold_dust = if is_ws { 2.5 } else { 4.0 };
+                        if dust >= threshold_dust {
+                            let x = layer.center_x(i);
+                            let surface = layer.surface(i);
+                            self.air.lift(V2::new(x, surface), wind_dir);
+                            dust = 0.0;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Bursts the snow on a window in all directions into clouds and powder (e.g. when going fullscreen).
@@ -999,7 +1439,7 @@ impl SnowSimulation {
             self.air.gust = None;
             return;
         }
-        let margin = 40.0;
+        let margin = SIDE_MARGIN;
         let front = gust_front(self.width, age, gust.direction, margin);
         // Whatever the front has long passed is gone by now, however deep it was.
         let finish = age > GUST_SWEEP + if gust.calm { 0.6 } else { 0.8 };
@@ -1080,7 +1520,8 @@ impl SnowSimulation {
 
     fn update_target(&mut self) {
         let per_megapoint = if self.snowfall_held { 0.0 } else { self.snowfall.flakes_per_megapoint() };
-        self.target_flakes = (per_megapoint * self.air.strength * self.density * self.width * self.height / 1_000_000.0) as usize;
+        let sim_width = self.width + 2.0 * SIDE_MARGIN;
+        self.target_flakes = (per_megapoint * self.air.strength * self.density * sim_width * self.height / 1_000_000.0) as usize;
     }
 }
 
@@ -1121,13 +1562,22 @@ impl Air {
             self.windows_changed = true;
         }
 
-        let jumped = displacement.length() / elapsed > JUMP_SPEED;
+        let speed = displacement.length() / elapsed;
+        let jumped = speed > JUMP_SPEED;
         if jumped {
             // The window vanished from under the snow and reappeared elsewhere: nothing carried the snow along.
             self.shed(ledge, 1.0, V2::ZERO);
             ledge.offset = V2::ZERO;
             ledge.offset_velocity = V2::ZERO;
             ledge.track_velocity = V2::ZERO;
+        } else if self.motion_shed > 0.01 {
+            let shed_threshold = (400.0 / self.motion_shed).clamp(50.0, 2500.0);
+            if speed > shed_threshold {
+                let excess = (speed - shed_threshold) / (shed_threshold * 0.6);
+                let share = (excess * 1.2 * self.motion_shed).clamp(0.25, 1.0);
+                let toss = displacement / elapsed * 0.45 + V2::new(self.random.range(-60.0, 60.0), self.random.range(40.0, 140.0));
+                self.shed(ledge, share, toss);
+            }
         }
 
         if resized {
@@ -1188,7 +1638,17 @@ impl Air {
         let mut lift = ledge.offset.y;
         let mut lift_velocity = ledge.offset_velocity.y;
         let fall = -GRAVITY - acceleration.y;
-        if lift > 0.0 || fall > ADHESION {
+        let effective_adhesion = if self.motion_shed > 0.01 {
+            (ADHESION / (self.motion_shed * 2.0).max(0.5)).clamp(100.0, ADHESION)
+        } else {
+            ADHESION
+        };
+        let effective_grip = if self.motion_shed > 0.01 {
+            (GRIP / (self.motion_shed * 2.0).max(0.5)).clamp(0.1, GRIP)
+        } else {
+            GRIP
+        };
+        if lift > 0.0 || fall > effective_adhesion {
             lift_velocity += fall * dt;
             lift += lift_velocity * dt;
             if lift <= 0.0 {
@@ -1197,10 +1657,10 @@ impl Air {
             }
         }
 
-        let pressure = if lift > 0.0 { 0.0 } else { (GRAVITY + ADHESION + acceleration.y).max(0.0) };
+        let pressure = if lift > 0.0 { 0.0 } else { (GRAVITY + effective_adhesion + acceleration.y).max(0.0) };
         let drive = -acceleration.x;
         let mut slide_velocity = ledge.offset_velocity.x;
-        if !(slide_velocity == 0.0 && drive.abs() <= GRIP * pressure) {
+        if !(slide_velocity == 0.0 && drive.abs() <= effective_grip * pressure) {
             let direction: f32 = if slide_velocity != 0.0 {
                 slide_velocity.signum()
             } else if drive > 0.0 {
@@ -1231,24 +1691,30 @@ impl Air {
             self.heights_changed = true;
         }
 
+        let shake_threshold = if self.motion_shed > 0.01 {
+            (0.5 / self.motion_shed).clamp(0.08, SHAKING)
+        } else {
+            SHAKING
+        };
         if lift > BREAK_LIFT {
             self.shed(ledge, 1.0, carried);
             ledge.offset = V2::ZERO;
             ledge.offset_velocity = V2::ZERO;
-        } else if ledge.agitation > SHAKING {
+        } else if ledge.agitation > shake_threshold {
             // A granular bed shaken well past gravity throws grains off its surface.
-            let rate = (0.06 * (ledge.agitation - SHAKING)).min(0.8);
-            let picks = (ledge.count() as f32 * rate * dt * 2.0 + self.random.next()) as usize;
+            let rate = (0.25 * (ledge.agitation - shake_threshold) * self.motion_shed.max(0.5)).min(0.95);
+            let picks = (ledge.count() as f32 * rate * dt * 4.0 + self.random.next()) as usize;
             for _ in 0..picks {
                 let column = ((self.random.next() * ledge.count() as f32) as usize).min(ledge.count() - 1);
                 let h = ledge.heights[column];
-                if h <= 0.2 {
+                if h <= 0.1 {
                     continue;
                 }
-                ledge.set(column, h * 0.5);
-                let velocity = carried + V2::new(self.random.range(-80.0, 80.0), self.random.range(50.0, 200.0));
-                let position = V2::new(ledge.center_x(column), ledge.floor(column) + h * 0.5);
-                self.release(h * 0.5 * COLUMN_WIDTH, position, velocity, V2::new(COLUMN_WIDTH / 2.0, h * 0.5), 0.25);
+                let shed_amount = (h * 0.6 * self.motion_shed.max(0.5)).min(h);
+                ledge.set(column, h - shed_amount);
+                let velocity = carried + V2::new(self.random.range(-100.0, 100.0), self.random.range(60.0, 220.0));
+                let position = V2::new(ledge.center_x(column), ledge.floor(column) + h - shed_amount * 0.5);
+                self.release(shed_amount * COLUMN_WIDTH, position, velocity, V2::new(COLUMN_WIDTH / 2.0, shed_amount), 0.25);
             }
             if picks > 0 {
                 self.heights_changed = true;
@@ -1345,6 +1811,20 @@ impl Air {
                 let left = ledge.center_x(start);
                 let right = ledge.center_x(end - 1);
                 self.throw_lump(area * cohesion, V2::new((left + right) / 2.0, (lowest + highest) / 2.0), velocity);
+            }
+            if self.motes.len() < MAX_MOTES && self.random.next() < 0.5 {
+                let left = ledge.center_x(start);
+                let right = ledge.center_x(end - 1);
+                let center = V2::new((left + right) * 0.5, (lowest + highest) * 0.5);
+                let speed = velocity.length();
+                self.motes.push(Mote {
+                    position: center + V2::new(self.random.range(-5.0, 5.0), self.random.range(-2.0, 4.0)),
+                    velocity: velocity * 0.5 + V2::new(self.random.range(-30.0, 30.0), self.random.range(20.0, 90.0) + speed * 0.05),
+                    size: self.random.range(8.0, 18.0),
+                    alpha: self.random.range(0.08, 0.2),
+                    age: 0.0,
+                    life: self.random.range(0.5, 1.2),
+                });
             }
             start = end;
         }
@@ -1534,6 +2014,108 @@ impl Air {
                 blown: false,
             });
         }
+
+        // Add cloud motes (эффект облачков) for the cursor
+        let random = &mut self.random;
+        if (random.next() < 0.45 || speed > 150.0) && self.motes.len() < MAX_MOTES {
+            let mote_v = velocity * random.range(0.25, 0.65)
+                + outward * (speed * random.range(0.08, 0.25))
+                + V2::new(random.range(-35.0, 35.0), random.range(20.0, 80.0));
+            self.motes.push(Mote {
+                position: origin + V2::new(random.range(-3.0, 3.0), random.range(-1.0, 4.0)),
+                velocity: mote_v,
+                size: random.range(7.0, 16.0),
+                alpha: random.range(0.08, 0.18),
+                age: 0.0,
+                life: random.range(0.5, 1.2),
+            });
+        }
+
+        area
+    }
+
+    /// Converts a swept volume of snow into airborne spray (grains + billowing cloud motes),
+    /// just like a cursor snowplow, but blown in the direction of the workspace transition.
+    fn plow_sweep_snow(&mut self, area: f32, origin: V2, dir: f32, speed: f32) {
+        if area <= 0.05 {
+            return;
+        }
+        let grains_to_spawn = ((area / 2.5) as usize).clamp(1, 4);
+        let share = area / grains_to_spawn as f32;
+
+        for _ in 0..grains_to_spawn {
+            if self.grains.len() >= MAX_GRAINS {
+                break;
+            }
+            let r = &mut self.random;
+            let vx = dir * r.range(speed * 0.7, speed * 1.5) + r.range(-30.0, 30.0);
+            let vy = r.range(40.0, 280.0) + speed * 0.1 * r.range(0.0, 1.0);
+            self.grains.push(Grain {
+                position: origin + V2::new(r.range(-2.0, 2.0), r.range(-2.0, 3.0)),
+                velocity: V2::new(vx, vy),
+                area: share,
+                size: (share.sqrt() * 1.1).clamp(1.2, 3.8),
+                lump: 0.0,
+                blown: true,
+            });
+        }
+
+        // Billowing cloud motes (эффект облачков)
+        let r = &mut self.random;
+        let mote_chance = (area / 4.0).clamp(0.25, 0.9);
+        if r.next() < mote_chance && self.motes.len() < MAX_MOTES {
+            let mote_vx = dir * r.range(speed * 0.35, speed * 0.85) + r.range(-20.0, 20.0);
+            let mote_vy = r.range(30.0, 140.0);
+            self.motes.push(Mote {
+                position: origin + V2::new(r.range(-4.0, 4.0), r.range(0.0, 6.0)),
+                velocity: V2::new(mote_vx, mote_vy),
+                size: r.range(8.0, 18.0),
+                alpha: r.range(0.08, 0.20),
+                age: 0.0,
+                life: r.range(0.7, 1.5),
+            });
+        }
+    }
+
+    /// Converts snow plowed by a moving window into physical grains AND cloud motes.
+    fn emit_window_plow(&mut self, area: f32, origin: V2, velocity: V2) -> f32 {
+        if area <= 0.05 {
+            return 0.0;
+        }
+        let speed = velocity.length();
+        let count = ((area / 1.6) as usize + 1).clamp(1, 5);
+        let share = area / count as f32;
+
+        for _ in 0..count {
+            if self.grains.len() >= MAX_GRAINS {
+                break;
+            }
+            let r = &mut self.random;
+            let vx = velocity.x * r.range(0.7, 1.4) + r.range(-25.0, 25.0);
+            let vy = r.range(35.0, 160.0) + speed * 0.12 * r.range(0.2, 1.0);
+            self.grains.push(Grain {
+                position: origin + V2::new(r.range(-2.0, 2.0), r.range(-1.0, 3.0)),
+                velocity: V2::new(vx, vy),
+                area: share,
+                size: (share.sqrt() * 1.1).clamp(1.2, 3.8),
+                lump: 0.0,
+                blown: false,
+            });
+        }
+
+        let r = &mut self.random;
+        if self.motes.len() < MAX_MOTES {
+            let mote_vx = velocity.x * r.range(0.3, 0.7) + r.range(-20.0, 20.0);
+            let mote_vy = r.range(20.0, 80.0) + speed * 0.08;
+            self.motes.push(Mote {
+                position: origin + V2::new(r.range(-3.0, 3.0), r.range(0.0, 5.0)),
+                velocity: V2::new(mote_vx, mote_vy),
+                size: r.range(8.0, 18.0),
+                alpha: r.range(0.08, 0.18),
+                age: 0.0,
+                life: r.range(0.5, 1.2),
+            });
+        }
         area
     }
 
@@ -1563,9 +2145,10 @@ impl Air {
         let random = &mut self.random;
         let near = random.next() < 0.02;
         let depth = if near { 1.0 } else { random.next().powf(1.6) };
-        let fall_speed = if near { random.range(75.0, 100.0) } else { 16.0 + depth * 50.0 + random.range(0.0, 10.0) };
+        let base_fall_speed = if near { random.range(75.0, 100.0) } else { 16.0 + depth * 50.0 + random.range(0.0, 10.0) };
+        let fall_speed = base_fall_speed * self.speed_factor;
         Flake {
-            position: V2::new(random.range(-30.0, width + 30.0), y),
+            position: V2::new(random.range(-SIDE_MARGIN, width + SIDE_MARGIN), y),
             velocity: V2::new(wind * (0.35 + 0.65 * depth), -fall_speed),
             fall_speed,
             size: if near { random.range(8.0, 13.0) } else { 1.4 + depth * 4.4 + random.range(0.0, 1.0) },
@@ -1573,9 +2156,10 @@ impl Air {
             alpha: if near { 0.28 } else { 0.4 + depth * 0.5 },
             soft: if near { 0.95 } else { 0.75 - depth * 0.45 },
             phase: random.range(0.0, PHASE_WRAP),
-            sway_rate: random.range(0.5, 1.4),
-            sway_amount: if near { random.range(10.0, 20.0) } else { random.range(4.0, 9.0) + depth * 10.0 },
+            sway_rate: random.range(0.5, 1.4) * (0.5 + 0.5 * self.sway_factor),
+            sway_amount: (if near { random.range(10.0, 20.0) } else { random.range(4.0, 9.0) + depth * 10.0 }) * self.sway_factor,
             settles: !near,
+            skipped_layer: 0,
             mass: 1.0,
             tint: [1.0; 3],
             tint_amount: 0.0,
@@ -1583,14 +2167,37 @@ impl Air {
         }
     }
 
+    fn workspace_wind_speed(&self) -> f32 {
+        if self.clock >= self.workspace_wind_until {
+            return 0.0;
+        }
+        let total_time = (self.workspace_wind_until - self.workspace_wind_start) as f32;
+        if total_time <= 0.001 {
+            return 0.0;
+        }
+        let elapsed = (self.clock - self.workspace_wind_start) as f32;
+        let progress = (elapsed / total_time).clamp(0.0, 1.0);
+        let envelope = if progress < 0.15 {
+            progress / 0.15
+        } else {
+            (1.0 - progress) / 0.85
+        };
+        self.workspace_wind_dir * self.workspace_wind * envelope
+    }
+
     fn wind_speed(&self) -> f32 {
-        self.breeze() + self.gust_speed()
+        self.breeze() + self.gust_speed() + self.workspace_wind_speed()
     }
 
     fn breeze(&self) -> f32 {
         let t = self.clock;
-        let breeze = (10.0 * (t * 0.07).sin() + 6.0 * (t * 0.19 + 1.7).sin() + 3.0 * (t * 0.43 + 4.1).sin()) as f32;
-        breeze * (0.6 + 0.4 * self.strength)
+        let natural = (10.0 * (t * 0.07).sin() + 6.0 * (t * 0.19 + 1.7).sin() + 3.0 * (t * 0.43 + 4.1).sin()) as f32;
+        let turbulence = if self.static_wind.abs() > 0.01 {
+            0.35 * self.static_wind * ((t * 0.23).sin() + 0.4 * (t * 0.53 + 1.2).sin()) as f32
+        } else {
+            0.0
+        };
+        (natural + self.static_wind + turbulence * self.sway_factor) * (0.6 + 0.4 * self.strength)
     }
 
     fn gust_speed(&self) -> f32 {
@@ -1652,26 +2259,43 @@ fn restore(ledge: &mut SnowLayer, left: f32, top: f32, columns: usize) {
 }
 
 /// The highest visible snow surface crossed while falling from `from` to `to` at `x`, allowing for the surface moving meanwhile.
-fn landing(layers: &[SnowLayer], x: f32, from: f32, to: f32) -> Option<(usize, usize)> {
+fn landing(layers: &[SnowLayer], x: f32, from: f32, to: f32, skipped_layer: usize, windows_solid: bool) -> Option<(usize, usize)> {
     let mut hit = None;
     let mut highest = -f32::MAX;
-    for (li, ledge) in layers.iter().enumerate().skip(1) {
-        let Some(i) = ledge.index(x) else { continue };
-        if !ledge.visible[i] {
-            continue;
+    if windows_solid {
+        for (li, ledge) in layers.iter().enumerate().skip(1) {
+            if li == skipped_layer {
+                continue;
+            }
+            let Some(i) = ledge.index(x) else { continue };
+            if !ledge.visible[i] {
+                continue;
+            }
+            let surface = ledge.surface(i);
+            // Entering the snow from above the window's edge counts, even if the surface rose this frame.
+            if from >= ledge.previous_base_y + ledge.bed[i] && to <= surface && surface > highest {
+                hit = Some((li, i));
+                highest = surface;
+            }
         }
-        let surface = ledge.surface(i);
-        // Entering the snow from above the window's edge counts, even if the surface rose this frame.
-        if from >= ledge.previous_base_y + ledge.bed[i] && to <= surface && surface > highest {
-            hit = Some((li, i));
-            highest = surface;
+        if hit.is_some() {
+            return hit;
         }
-    }
-    if hit.is_some() {
-        return hit;
     }
     let ground = &layers[0];
-    let i = ground.clamped_index(x);
+    let Some(i) = ground.index(x).or_else(|| {
+        if x >= -ground.column_width * 0.5 && x < 0.0 {
+            Some(0)
+        } else if x >= ground.base().x + ground.heights.len() as f32 * ground.column_width
+            && x < ground.base().x + ground.heights.len() as f32 * ground.column_width + ground.column_width * 0.5
+        {
+            Some(ground.heights.len() - 1)
+        } else {
+            None
+        }
+    }) else {
+        return None;
+    };
     (to <= ground.surface(i)).then_some((0, i))
 }
 

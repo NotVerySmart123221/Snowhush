@@ -159,6 +159,8 @@ struct Flake {
     tint_amount: f32,
     /// The direction of the gust that caught the flake and carries it off the screen; zero until then.
     blown: f32,
+    /// True only for ambient snowfall that spawned from the sky and has not landed on any surface or come from an effect.
+    can_wrap: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -287,7 +289,7 @@ pub struct SnowSimulation {
 impl SnowSimulation {
     pub fn new(width: f32, height: f32, snowfall: Snowfall) -> SnowSimulation {
         let mut seed = Random::new();
-        let ground = SnowLayer::new(V2::ZERO, column_count(width), COLUMN_WIDTH, GROUND_DEPTH, false, (seed.range(0.0, TAU), seed.range(0.0, TAU)));
+        let ground = SnowLayer::new(V2::ZERO, column_count(width), COLUMN_WIDTH, GROUND_DEPTH, true, (seed.range(0.0, TAU), seed.range(0.0, TAU)));
         let mut simulation = SnowSimulation {
             width,
             height,
@@ -364,6 +366,15 @@ impl SnowSimulation {
     #[cfg(test)]
     pub fn layers_mut(&mut self) -> &mut [SnowLayer] {
         &mut self.layers
+    }
+
+    #[cfg(test)]
+    pub fn spawn_flake_for_test(&mut self, pos: V2, vel: V2, can_wrap: bool) {
+        let mut flake = self.air.make_flake(self.width, pos.y);
+        flake.position = pos;
+        flake.velocity = vel;
+        flake.can_wrap = can_wrap;
+        self.air.flakes.push(flake);
     }
 
     pub fn pace(&self) -> Pace {
@@ -563,6 +574,7 @@ impl SnowSimulation {
                 tint: piece.color,
                 tint_amount: 1.0,
                 blown: 0.0,
+                can_wrap: false,
             });
         }
     }
@@ -998,7 +1010,7 @@ impl SnowSimulation {
             flake.position.x += (flake.velocity.x + sway) * dt;
             flake.position.y += flake.velocity.y * flutter * dt;
 
-            if flake.blown == 0.0 {
+            if flake.can_wrap && flake.blown == 0.0 {
                 if flake.position.x < -30.0 {
                     flake.position.x += self.width + 60.0;
                 } else if flake.position.x > self.width + 30.0 {
@@ -1015,6 +1027,7 @@ impl SnowSimulation {
                     if li > 0 && self.window_leak > 0.0 && self.air.random.next() < self.window_leak {
                         // Flake slips past this ledge with probability window_leak and continues falling!
                         flake.skipped_layer = li;
+                        flake.can_wrap = false;
                         flake.position.y = (flake.position.y - flake.size * 0.5).min(self.layers[li].surface(column) - 0.5);
                     } else {
                         if self.snowfall_held && flake.mass < 1.0 && li == 0 {
@@ -1083,13 +1096,7 @@ impl SnowSimulation {
                 }
             }
 
-            if !grain.blown {
-                if grain.position.x < -30.0 {
-                    grain.position.x += self.width + 60.0;
-                } else if grain.position.x > self.width + 30.0 {
-                    grain.position.x -= self.width + 60.0;
-                }
-            } else if grain.position.x < -30.0 || grain.position.x > self.width + 30.0 {
+            if grain.position.x < -30.0 || grain.position.x > self.width + 30.0 {
                 self.air.grains.swap_remove(i);
                 continue;
             }
@@ -1505,13 +1512,21 @@ impl SnowSimulation {
             if layer.relax(repose, ROUNDING) {
                 self.air.heights_changed = true;
             }
-            if layer.spill_left > 1.5 {
-                let velocity = layer.track_velocity + V2::new(-6.0, -15.0);
+            if layer.spill_left > 1.0 {
+                let velocity = if li == 0 {
+                    V2::new(-20.0, 5.0)
+                } else {
+                    layer.track_velocity + V2::new(-6.0, -15.0)
+                };
                 self.air.release(layer.spill_left, edge_point(layer, true), velocity, V2::new(0.25, 1.0), 0.0);
                 layer.spill_left = 0.0;
             }
-            if layer.spill_right > 1.5 {
-                let velocity = layer.track_velocity + V2::new(6.0, -15.0);
+            if layer.spill_right > 1.0 {
+                let velocity = if li == 0 {
+                    V2::new(20.0, 5.0)
+                } else {
+                    layer.track_velocity + V2::new(6.0, -15.0)
+                };
                 self.air.release(layer.spill_right, edge_point(layer, false), velocity, V2::new(0.25, 1.0), 0.0);
                 layer.spill_right = 0.0;
             }
@@ -2164,6 +2179,7 @@ impl Air {
             tint: [1.0; 3],
             tint_amount: 0.0,
             blown: 0.0,
+            can_wrap: true,
         }
     }
 

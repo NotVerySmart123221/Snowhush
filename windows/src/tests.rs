@@ -521,11 +521,7 @@ fn stationary_cursor_does_not_push_snowflakes() {
 #[test]
 fn snowflakes_wrap_around_edges() {
     let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
-    sim.scatter(&[ScatterPiece {
-        position: V2::new(1309.0, 400.0),
-        velocity: V2::new(100.0, -10.0),
-        color: [1.0, 1.0, 1.0],
-    }]);
+    sim.spawn_flake_for_test(V2::new(1309.0, 400.0), V2::new(100.0, -10.0), true);
 
     let mut sprites = vec![Sprite::default(); 100];
     sim.step(0.1, AWAY);
@@ -536,6 +532,17 @@ fn snowflakes_wrap_around_edges() {
         "snowflake should wrap from right to left side: {}",
         sprites[0].position.x
     );
+
+    // Effect pieces (e.g. scatter) should NOT wrap around and should exit screen
+    let mut sim_scatter = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim_scatter.scatter(&[ScatterPiece {
+        position: V2::new(1309.0, 400.0),
+        velocity: V2::new(100.0, -10.0),
+        color: [1.0, 1.0, 1.0],
+    }]);
+    sim_scatter.step(0.1, AWAY);
+    let count_scatter = sim_scatter.write_sprites(&mut sprites);
+    assert_eq!(count_scatter, 0, "effect piece should not wrap around and should exit screen");
 }
 
 #[test]

@@ -228,6 +228,13 @@ struct Air {
     pub cursor_force: f32,
     pub speed_factor: f32,
     pub sway_factor: f32,
+    pub cloud_density: f32,
+    pub cloud_amount: f32,
+    pub cloud_size: f32,
+    pub spray_density: f32,
+    pub spray_amount: f32,
+    pub spray_size: f32,
+    pub spray_force: f32,
     cursor: Option<V2>,
     cursor_velocity: V2,
     held_layers: Vec<usize>,
@@ -260,6 +267,13 @@ pub struct SnowSimulation {
     pub cursor_force: f32,
     pub speed_factor: f32,
     pub sway_factor: f32,
+    pub cloud_density: f32,
+    pub cloud_amount: f32,
+    pub cloud_size: f32,
+    pub spray_density: f32,
+    pub spray_amount: f32,
+    pub spray_size: f32,
+    pub spray_force: f32,
     pub accumulates: bool,
     pub windows_solid: bool,
     /// Side edges, left and right, with no display past them: a window slid past one leaves its snow heaped against the edge.
@@ -306,6 +320,13 @@ impl SnowSimulation {
             cursor_force: 1.0,
             speed_factor: 1.0,
             sway_factor: 1.0,
+            cloud_density: 1.0,
+            cloud_amount: 1.0,
+            cloud_size: 1.0,
+            spray_density: 1.0,
+            spray_amount: 1.0,
+            spray_size: 1.0,
+            spray_force: 1.0,
             accumulates: true,
             windows_solid: true,
             walls: (false, false),
@@ -333,9 +354,16 @@ impl SnowSimulation {
                 static_wind: 20.0,
                 window_leak: 0.35,
                 motion_shed: 1.0,
-            cursor_force: 1.0,
-            speed_factor: 1.0,
-            sway_factor: 1.0,
+                cursor_force: 1.0,
+                speed_factor: 1.0,
+                sway_factor: 1.0,
+                cloud_density: 1.0,
+                cloud_amount: 1.0,
+                cloud_size: 1.0,
+                spray_density: 1.0,
+                spray_amount: 1.0,
+                spray_size: 1.0,
+                spray_force: 1.0,
                 cursor: None,
                 cursor_velocity: V2::ZERO,
                 held_layers: Vec::new(),
@@ -441,6 +469,13 @@ impl SnowSimulation {
         self.air.cursor_force = self.cursor_force;
         self.air.speed_factor = self.speed_factor;
         self.air.sway_factor = self.sway_factor;
+        self.air.cloud_density = self.cloud_density;
+        self.air.cloud_amount = self.cloud_amount;
+        self.air.cloud_size = self.cloud_size;
+        self.air.spray_density = self.spray_density;
+        self.air.spray_amount = self.spray_amount;
+        self.air.spray_size = self.spray_size;
+        self.air.spray_force = self.spray_force;
         let was_moving = self.sprite_count() > 0;
         self.air.heights_changed = false;
 
@@ -500,31 +535,35 @@ impl SnowSimulation {
             tint: flake.tint,
             ..Sprite::default()
         });
-        let grains = self.air.grains.iter().map(|grain| Sprite {
+        let spray_density = self.air.spray_density;
+        let spray_size = self.air.spray_size;
+        let grains = self.air.grains.iter().map(move |grain| Sprite {
             position: grain.position,
             velocity: grain.velocity,
-            size: grain.size,
+            size: grain.size * spray_size,
             alpha: if grain.lump > 0.0 {
-                0.97
+                (0.97 * spray_density).clamp(0.0, 1.0)
             } else if grain.blown {
-                0.8
+                (0.8 * spray_density).clamp(0.0, 1.0)
             } else {
-                0.95
+                (0.95 * spray_density).clamp(0.0, 1.0)
             },
             soft: if grain.lump > 0.0 { 0.2 } else { 0.3 },
             tint: [1.0; 3],
             lump: grain.lump,
             ..Sprite::default()
         });
-        let motes = self.air.motes.iter().map(|mote| {
+        let cloud_density = self.air.cloud_density;
+        let cloud_size = self.air.cloud_size;
+        let motes = self.air.motes.iter().map(move |mote| {
             let t = (mote.age / mote.life).clamp(0.0, 1.0);
             let expansion = 1.0 + 2.0 * (1.0 - (-3.2 * t).exp());
             let fade_in = (mote.age / 0.08).min(1.0);
             let fade_out = (1.0 - t).powf(1.6);
-            let alpha = (mote.alpha * fade_in * fade_out).clamp(0.0, 1.0);
+            let alpha = (mote.alpha * fade_in * fade_out * cloud_density).clamp(0.0, 1.0);
             Sprite {
                 position: mote.position,
-                size: mote.size * expansion,
+                size: mote.size * expansion * cloud_size,
                 alpha,
                 soft: 1.0,
                 tint: [1.0; 3],
@@ -2008,7 +2047,7 @@ impl Air {
 
         // Add cloud motes (эффект облачков) for the cursor
         let random = &mut self.random;
-        if (random.next() < 0.55 || speed > 120.0) && self.motes.len() < MAX_MOTES {
+        if self.cloud_amount > 0.001 && (random.next() < 0.55 * self.cloud_amount || speed > 120.0) && self.motes.len() < MAX_MOTES {
             let mote_v = velocity * random.range(0.3, 0.7)
                 + outward * (speed * random.range(0.1, 0.3))
                 + V2::new(random.range(-35.0, 35.0), random.range(30.0, 90.0));
@@ -2098,12 +2137,13 @@ impl Air {
             self.overflow.push((area, col_x));
             return;
         }
-        let count = room.min(((area / 1.4) as usize + 1).clamp(1, 5));
+        let base_count = ((area / 1.4) as usize + 1).clamp(1, 5);
+        let count = room.min(((base_count as f32 * self.spray_amount).round() as usize).clamp(1, 10));
         let share = area / count as f32;
 
         for _ in 0..count {
             let r = &mut self.random;
-            let (vx, vy, spawn_pos) = if is_crushing {
+            let (mut vx, mut vy, spawn_pos) = if is_crushing {
                 // Downward crushing: erupt violently upwards and outwards to the sides
                 let edge_x = if side_dir < 0.0 { frame.min_x() } else { frame.max_x() };
                 let t_edge = r.range(0.25, 0.85);
@@ -2125,6 +2165,9 @@ impl Air {
                 (fling_x, fling_y, V2::new(px, py))
             };
 
+            vx *= self.spray_force;
+            vy *= self.spray_force;
+
             let is_lump = self.random.next() < 0.25;
             self.grains.push(Grain {
                 position: spawn_pos,
@@ -2137,39 +2180,41 @@ impl Air {
         }
 
         // Billowing clouds (эффект облачков)
-        let r = &mut self.random;
-        let mote_chance = (area / 2.5).clamp(0.2, 0.7);
-        if r.next() < mote_chance && self.motes.len() < MAX_MOTES {
-            let mote_vx = if is_crushing {
-                side_dir * (r.range(60.0, 180.0) + downward_speed * 0.3) + velocity.x * 0.2 + r.range(-20.0, 20.0)
-            } else {
-                velocity.x * r.range(0.6, 1.4) + side_dir * r.range(25.0, 70.0) + r.range(-20.0, 20.0)
-            };
-            let mote_vy = r.range(60.0, 200.0) + speed * 0.12;
-            let spawn_x = col_x + side_dir * r.range(2.0, 10.0);
-            let spawn_y = win_bottom + r.range(2.0, 6.0);
+        if self.cloud_amount > 0.001 {
+            let r = &mut self.random;
+            let mote_chance = ((area / 2.5).clamp(0.2, 0.7) * self.cloud_amount).clamp(0.05, 1.0);
+            if r.next() < mote_chance && self.motes.len() < MAX_MOTES {
+                let mote_vx = if is_crushing {
+                    side_dir * (r.range(60.0, 180.0) + downward_speed * 0.3) + velocity.x * 0.2 + r.range(-20.0, 20.0)
+                } else {
+                    velocity.x * r.range(0.6, 1.4) + side_dir * r.range(25.0, 70.0) + r.range(-20.0, 20.0)
+                };
+                let mote_vy = r.range(60.0, 200.0) + speed * 0.12;
+                let spawn_x = col_x + side_dir * r.range(2.0, 10.0);
+                let spawn_y = win_bottom + r.range(2.0, 6.0);
 
-            // Large billowing mist cloud
-            self.motes.push(Mote {
-                position: V2::new(spawn_x, spawn_y),
-                velocity: V2::new(mote_vx * 0.6, mote_vy * 0.7),
-                size: r.range(20.0, 45.0),
-                alpha: r.range(0.18, 0.35),
-                age: 0.0,
-                life: r.range(0.8, 1.5),
-            });
-
-            // Bright dense core puff if displacement is prominent
-            if area > 1.2 && self.motes.len() < MAX_MOTES {
-                let r2 = &mut self.random;
+                // Large billowing mist cloud
                 self.motes.push(Mote {
-                    position: V2::new(spawn_x + r2.range(-3.0, 3.0), spawn_y + r2.range(-1.0, 3.0)),
-                    velocity: V2::new(mote_vx * 0.85, mote_vy * 0.9),
-                    size: r2.range(12.0, 22.0),
-                    alpha: r2.range(0.28, 0.48),
+                    position: V2::new(spawn_x, spawn_y),
+                    velocity: V2::new(mote_vx * 0.6, mote_vy * 0.7),
+                    size: r.range(20.0, 45.0),
+                    alpha: r.range(0.18, 0.35),
                     age: 0.0,
-                    life: r2.range(0.5, 1.0),
+                    life: r.range(0.8, 1.5),
                 });
+
+                // Bright dense core puff if displacement is prominent
+                if (area > 1.2 || self.cloud_amount > 1.4) && self.motes.len() < MAX_MOTES {
+                    let r2 = &mut self.random;
+                    self.motes.push(Mote {
+                        position: V2::new(spawn_x + r2.range(-3.0, 3.0), spawn_y + r2.range(-1.0, 3.0)),
+                        velocity: V2::new(mote_vx * 0.85, mote_vy * 0.9),
+                        size: r2.range(12.0, 22.0),
+                        alpha: r2.range(0.28, 0.48),
+                        age: 0.0,
+                        life: r2.range(0.5, 1.0),
+                    });
+                }
             }
         }
     }

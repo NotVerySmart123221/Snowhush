@@ -125,6 +125,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--cloud-density" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_density = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--cloud-amount" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_amount = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--cloud-size" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_size = val.max(0.1);
+                    }
+                    i += 1;
+                }
+            }
+            "--spray-density" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.spray_density = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--spray-amount" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.spray_amount = val.max(0.1);
+                    }
+                    i += 1;
+                }
+            }
+            "--spray-size" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.spray_size = val.max(0.1);
+                    }
+                    i += 1;
+                }
+            }
+            "--spray-force" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.spray_force = val.max(0.1);
+                    }
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 println!("Snowhush for Wayland (Hyprland, Niri & generic)");
                 println!("Usage: snowhush-wayland [OPTIONS]");

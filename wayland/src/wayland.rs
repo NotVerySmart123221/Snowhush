@@ -47,6 +47,13 @@ pub struct AppConfig {
     pub window_leak: f32,
     pub motion_shed: f32,
     pub cursor_force: f32,
+    pub cloud_density: f32,
+    pub cloud_amount: f32,
+    pub cloud_size: f32,
+    pub spray_density: f32,
+    pub spray_amount: f32,
+    pub spray_size: f32,
+    pub spray_force: f32,
 }
 
 impl Default for AppConfig {
@@ -67,6 +74,13 @@ impl Default for AppConfig {
             window_leak: 0.35,
             motion_shed: 1.0,
             cursor_force: 1.0,
+            cloud_density: 1.0,
+            cloud_amount: 1.0,
+            cloud_size: 1.0,
+            spray_density: 1.0,
+            spray_amount: 1.0,
+            spray_size: 1.0,
+            spray_force: 1.0,
         }
     }
 }
@@ -97,6 +111,20 @@ pub struct JsonConfig {
     pub motion_shed: f32,
     #[serde(default = "default_one")]
     pub cursor_force: f32,
+    #[serde(default = "default_one")]
+    pub cloud_density: f32,
+    #[serde(default = "default_one")]
+    pub cloud_amount: f32,
+    #[serde(default = "default_one")]
+    pub cloud_size: f32,
+    #[serde(default = "default_one")]
+    pub spray_density: f32,
+    #[serde(default = "default_one")]
+    pub spray_amount: f32,
+    #[serde(default = "default_one")]
+    pub spray_size: f32,
+    #[serde(default = "default_one")]
+    pub spray_force: f32,
 }
 
 fn default_true() -> bool {
@@ -139,6 +167,13 @@ impl JsonConfig {
             window_leak: cfg.window_leak,
             motion_shed: cfg.motion_shed,
             cursor_force: cfg.cursor_force,
+            cloud_density: cfg.cloud_density,
+            cloud_amount: cfg.cloud_amount,
+            cloud_size: cfg.cloud_size,
+            spray_density: cfg.spray_density,
+            spray_amount: cfg.spray_amount,
+            spray_size: cfg.spray_size,
+            spray_force: cfg.spray_force,
         }
     }
 
@@ -167,6 +202,13 @@ impl JsonConfig {
             window_leak: self.window_leak,
             motion_shed: self.motion_shed,
             cursor_force: self.cursor_force,
+            cloud_density: self.cloud_density.clamp(0.0, 5.0),
+            cloud_amount: self.cloud_amount.clamp(0.0, 5.0),
+            cloud_size: self.cloud_size.clamp(0.1, 5.0),
+            spray_density: self.spray_density.clamp(0.0, 5.0),
+            spray_amount: self.spray_amount.clamp(0.1, 5.0),
+            spray_size: self.spray_size.clamp(0.1, 5.0),
+            spray_force: self.spray_force.clamp(0.1, 5.0),
         }
     }
 }
@@ -313,6 +355,13 @@ impl SnowhushApp {
         simulation.window_leak = config.window_leak;
         simulation.motion_shed = config.motion_shed;
         simulation.cursor_force = config.cursor_force;
+        simulation.cloud_density = config.cloud_density;
+        simulation.cloud_amount = config.cloud_amount;
+        simulation.cloud_size = config.cloud_size;
+        simulation.spray_density = config.spray_density;
+        simulation.spray_amount = config.spray_amount;
+        simulation.spray_size = config.spray_size;
+        simulation.spray_force = config.spray_force;
 
         if load_config_file().is_none() {
             save_config_file(&config);
@@ -399,6 +448,13 @@ impl SnowhushApp {
                     self.simulation.window_leak = new_cfg.window_leak;
                     self.simulation.motion_shed = new_cfg.motion_shed;
                     self.simulation.cursor_force = new_cfg.cursor_force;
+                    self.simulation.cloud_density = new_cfg.cloud_density;
+                    self.simulation.cloud_amount = new_cfg.cloud_amount;
+                    self.simulation.cloud_size = new_cfg.cloud_size;
+                    self.simulation.spray_density = new_cfg.spray_density;
+                    self.simulation.spray_amount = new_cfg.spray_amount;
+                    self.simulation.spray_size = new_cfg.spray_size;
+                    self.simulation.spray_force = new_cfg.spray_force;
                     self.tracker.update_config(TrackerConfig {
                         top_margin: new_cfg.top_margin,
                         track_layers: new_cfg.track_layers,

@@ -54,6 +54,8 @@ pub struct AppConfig {
     pub spray_amount: f32,
     pub spray_size: f32,
     pub spray_force: f32,
+    pub window_wake: f32,
+    pub motion_blur: f32,
 }
 
 impl Default for AppConfig {
@@ -81,6 +83,8 @@ impl Default for AppConfig {
             spray_amount: 1.0,
             spray_size: 1.0,
             spray_force: 1.0,
+            window_wake: 1.0,
+            motion_blur: 1.0,
         }
     }
 }
@@ -125,6 +129,10 @@ pub struct JsonConfig {
     pub spray_size: f32,
     #[serde(default = "default_one")]
     pub spray_force: f32,
+    #[serde(default = "default_one")]
+    pub window_wake: f32,
+    #[serde(default = "default_one")]
+    pub motion_blur: f32,
 }
 
 fn default_true() -> bool {
@@ -174,6 +182,8 @@ impl JsonConfig {
             spray_amount: cfg.spray_amount,
             spray_size: cfg.spray_size,
             spray_force: cfg.spray_force,
+            window_wake: cfg.window_wake,
+            motion_blur: cfg.motion_blur,
         }
     }
 
@@ -209,6 +219,8 @@ impl JsonConfig {
             spray_amount: self.spray_amount.clamp(0.1, 5.0),
             spray_size: self.spray_size.clamp(0.1, 5.0),
             spray_force: self.spray_force.clamp(0.1, 5.0),
+            window_wake: self.window_wake.clamp(0.0, 5.0),
+            motion_blur: self.motion_blur.clamp(0.0, 5.0),
         }
     }
 }
@@ -362,6 +374,8 @@ impl SnowhushApp {
         simulation.spray_amount = config.spray_amount;
         simulation.spray_size = config.spray_size;
         simulation.spray_force = config.spray_force;
+        simulation.window_wake = config.window_wake;
+        simulation.motion_blur = config.motion_blur;
 
         if load_config_file().is_none() {
             save_config_file(&config);
@@ -455,6 +469,8 @@ impl SnowhushApp {
                     self.simulation.spray_amount = new_cfg.spray_amount;
                     self.simulation.spray_size = new_cfg.spray_size;
                     self.simulation.spray_force = new_cfg.spray_force;
+                    self.simulation.window_wake = new_cfg.window_wake;
+                    self.simulation.motion_blur = new_cfg.motion_blur;
                     self.tracker.update_config(TrackerConfig {
                         top_margin: new_cfg.top_margin,
                         track_layers: new_cfg.track_layers,

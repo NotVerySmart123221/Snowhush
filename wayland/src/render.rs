@@ -17,6 +17,7 @@ pub struct Uniforms {
     pub light: [f32; 4],
     pub shadow_tint: [f32; 4],
     pub occluders: [[f32; 4]; 16],
+    pub motion_blur: [f32; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -442,6 +443,7 @@ impl Renderer {
                 light: [ambient.light[0], ambient.light[1], ambient.light[2], 1.0],
                 shadow_tint: ambient.shadow_tint,
                 occluders: [[0.0; 4]; 16],
+                motion_blur: [0.0; 4],
             };
             for (j, o) in pile.occluders.iter().take(16).enumerate() {
                 uniforms.occluders[j] = *o;
@@ -466,6 +468,7 @@ impl Renderer {
                 light: [ambient.light[0], ambient.light[1], ambient.light[2], 1.0],
                 shadow_tint: ambient.shadow_tint,
                 occluders: [[0.0; 4]; 16],
+                motion_blur: [simulation.motion_blur, 0.0, 0.0, 0.0],
             };
             let slice = bytemuck::bytes_of(&sprite_uniforms);
             let start = piles.len() * self.uniform_stride;

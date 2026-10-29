@@ -938,3 +938,42 @@ fn test_lockscreen_stashes_desktop_windows_and_collects_on_lock_card() {
     let restored_desktop_snow = piles(&sim).iter().find(|(origin, _)| origin.y > 500.0).map_or(0.0, |p| p.1);
     assert!(restored_desktop_snow > 10.0, "desktop snow should be restored after unlocking: {restored_desktop_snow}");
 }
+
+#[test]
+fn test_window_wake_slider_controls_aerodynamic_cushion_and_does_not_disturb_ground_snow() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    // Put snow on ground
+    for col in 100..300 {
+        sim.layers_mut()[0].set(col, 25.0);
+    }
+    sim.layers_mut()[0].refresh_top();
+    let initial_ground_snow = piles(&sim)[0].1;
+
+    // Spawn window high above ground (ground y is 0, window y is 300..600)
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 300.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+
+    // Set wake to 2.5x and move window horizontally at high speed
+    sim.window_wake = 2.5;
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 700.0, y: 300.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.016, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    // Ground snow must NOT be eroded or blown away by the air cushion!
+    let final_ground_snow = piles(&sim)[0].1;
+    assert!((final_ground_snow - initial_ground_snow).abs() < 0.1,
+        "Aerodynamic air cushion must never disturb ground snowdrifts: initial {initial_ground_snow}, final {final_ground_snow}");
+}

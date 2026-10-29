@@ -224,6 +224,7 @@ struct Air {
     strength: f32,
     static_wind: f32,
     window_leak: f32,
+    pub window_wake: f32,
     pub motion_shed: f32,
     pub cursor_force: f32,
     pub speed_factor: f32,
@@ -263,6 +264,7 @@ pub struct SnowSimulation {
     pub wind_factor: f32,
     pub static_wind: f32,
     pub window_leak: f32,
+    pub window_wake: f32,
     pub motion_shed: f32,
     pub cursor_force: f32,
     pub speed_factor: f32,
@@ -274,6 +276,7 @@ pub struct SnowSimulation {
     pub spray_amount: f32,
     pub spray_size: f32,
     pub spray_force: f32,
+    pub motion_blur: f32,
     pub accumulates: bool,
     pub windows_solid: bool,
     /// Side edges, left and right, with no display past them: a window slid past one leaves its snow heaped against the edge.
@@ -316,6 +319,7 @@ impl SnowSimulation {
             wind_factor: 1.0,
             static_wind: 20.0,
             window_leak: 0.35,
+            window_wake: 1.0,
             motion_shed: 1.0,
             cursor_force: 1.0,
             speed_factor: 1.0,
@@ -327,6 +331,7 @@ impl SnowSimulation {
             spray_amount: 1.0,
             spray_size: 1.0,
             spray_force: 1.0,
+            motion_blur: 1.0,
             accumulates: true,
             windows_solid: true,
             walls: (false, false),
@@ -353,6 +358,7 @@ impl SnowSimulation {
                 strength: 1.0,
                 static_wind: 20.0,
                 window_leak: 0.35,
+                window_wake: 1.0,
                 motion_shed: 1.0,
                 cursor_force: 1.0,
                 speed_factor: 1.0,
@@ -465,6 +471,7 @@ impl SnowSimulation {
         self.air.clock += dt as f64;
         self.air.static_wind = self.static_wind;
         self.air.window_leak = self.window_leak;
+        self.air.window_wake = self.window_wake;
         self.air.motion_shed = self.motion_shed;
         self.air.cursor_force = self.cursor_force;
         self.air.speed_factor = self.speed_factor;
@@ -978,36 +985,38 @@ impl SnowSimulation {
                 }
             }
 
-            for wake in &self.active_wakes {
-                let speed = wake.velocity.length();
-                let wake_radius = 80.0 * (0.6 + 0.4 * self.cursor_force.sqrt());
+            if self.window_wake > 0.001 {
+                for wake in &self.active_wakes {
+                    let speed = wake.velocity.length();
+                    let wake_radius = 80.0 * (0.6 + 0.4 * self.window_wake.sqrt());
 
-                if flake.position.x < wake.frame.min_x() - wake_radius
-                    || flake.position.x > wake.frame.max_x() + wake_radius
-                    || flake.position.y < wake.frame.min_y() - wake_radius
-                    || flake.position.y > wake.frame.max_y() + wake_radius
-                {
-                    continue;
-                }
+                    if flake.position.x < wake.frame.min_x() - wake_radius
+                        || flake.position.x > wake.frame.max_x() + wake_radius
+                        || flake.position.y < wake.frame.min_y() - wake_radius
+                        || flake.position.y > wake.frame.max_y() + wake_radius
+                    {
+                        continue;
+                    }
 
-                let clamped_x = flake.position.x.clamp(wake.frame.min_x(), wake.frame.max_x());
-                let clamped_y = flake.position.y.clamp(wake.frame.min_y(), wake.frame.max_y());
-                let diff = flake.position - V2::new(clamped_x, clamped_y);
-                let dist_sq = diff.length_squared();
+                    let clamped_x = flake.position.x.clamp(wake.frame.min_x(), wake.frame.max_x());
+                    let clamped_y = flake.position.y.clamp(wake.frame.min_y(), wake.frame.max_y());
+                    let diff = flake.position - V2::new(clamped_x, clamped_y);
+                    let dist_sq = diff.length_squared();
 
-                if dist_sq < wake_radius * wake_radius {
-                    let dist = dist_sq.sqrt();
-                    let falloff = 1.0 - dist / wake_radius;
-                    let drag = (wake.velocity - flake.velocity) * (falloff * falloff * 5.0 * self.cursor_force * dt).min(1.0);
-                    let push_dir = if dist > 0.01 {
-                        diff / dist
-                    } else if speed > 1.0 {
-                        wake.velocity / speed
-                    } else {
-                        V2::new(0.0, 1.0)
-                    };
-                    let push = push_dir * (falloff * 240.0 * self.cursor_force * dt);
-                    flake.velocity += drag + push;
+                    if dist_sq < wake_radius * wake_radius {
+                        let dist = dist_sq.sqrt();
+                        let falloff = 1.0 - dist / wake_radius;
+                        let drag = (wake.velocity - flake.velocity) * (falloff * falloff * 5.0 * self.window_wake * dt).min(1.0);
+                        let push_dir = if dist > 0.01 {
+                            diff / dist
+                        } else if speed > 1.0 {
+                            wake.velocity / speed
+                        } else {
+                            V2::new(0.0, 1.0)
+                        };
+                        let push = push_dir * (falloff * 240.0 * self.window_wake * dt);
+                        flake.velocity += drag + push;
+                    }
                 }
             }
 
@@ -1087,27 +1096,29 @@ impl SnowSimulation {
             }
             grain.position += grain.velocity * dt;
 
-            for wake in &self.active_wakes {
-                let wake_radius = 60.0;
-                if grain.position.x < wake.frame.min_x() - wake_radius
-                    || grain.position.x > wake.frame.max_x() + wake_radius
-                    || grain.position.y < wake.frame.min_y() - wake_radius
-                    || grain.position.y > wake.frame.max_y() + wake_radius
-                {
-                    continue;
-                }
+            if self.window_wake > 0.001 {
+                for wake in &self.active_wakes {
+                    let wake_radius = 60.0 * (0.6 + 0.4 * self.window_wake.sqrt());
+                    if grain.position.x < wake.frame.min_x() - wake_radius
+                        || grain.position.x > wake.frame.max_x() + wake_radius
+                        || grain.position.y < wake.frame.min_y() - wake_radius
+                        || grain.position.y > wake.frame.max_y() + wake_radius
+                    {
+                        continue;
+                    }
 
-                let clamped_x = grain.position.x.clamp(wake.frame.min_x(), wake.frame.max_x());
-                let clamped_y = grain.position.y.clamp(wake.frame.min_y(), wake.frame.max_y());
-                let diff = grain.position - V2::new(clamped_x, clamped_y);
-                let dist_sq = diff.length_squared();
+                    let clamped_x = grain.position.x.clamp(wake.frame.min_x(), wake.frame.max_x());
+                    let clamped_y = grain.position.y.clamp(wake.frame.min_y(), wake.frame.max_y());
+                    let diff = grain.position - V2::new(clamped_x, clamped_y);
+                    let dist_sq = diff.length_squared();
 
-                if dist_sq < wake_radius * wake_radius {
-                    let dist = dist_sq.sqrt();
-                    let falloff = 1.0 - dist / wake_radius;
-                    let drag = (wake.velocity - grain.velocity) * (falloff * falloff * 5.0 * dt).min(1.0);
-                    let push_dir = if dist > 0.01 { diff / dist } else { V2::new(0.0, 1.0) };
-                    grain.velocity += drag + push_dir * (falloff * 200.0 * dt);
+                    if dist_sq < wake_radius * wake_radius {
+                        let dist = dist_sq.sqrt();
+                        let falloff = 1.0 - dist / wake_radius;
+                        let drag = (wake.velocity - grain.velocity) * (falloff * falloff * 5.0 * self.window_wake * dt).min(1.0);
+                        let push_dir = if dist > 0.01 { diff / dist } else { V2::new(0.0, 1.0) };
+                        grain.velocity += drag + push_dir * (falloff * 200.0 * self.window_wake * dt);
+                    }
                 }
             }
 
@@ -1601,7 +1612,7 @@ impl Air {
             ledge.offset_velocity = V2::ZERO;
             ledge.track_velocity = V2::ZERO;
         } else if self.motion_shed > 0.01 {
-            let shed_threshold = (400.0 / self.motion_shed).clamp(50.0, 2500.0);
+            let shed_threshold = (1000.0 / self.motion_shed).clamp(200.0, 4000.0);
             if speed > shed_threshold {
                 let excess = (speed - shed_threshold) / (shed_threshold * 0.6);
                 let share = (excess * 1.2 * self.motion_shed).clamp(0.25, 1.0);

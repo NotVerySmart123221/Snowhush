@@ -181,6 +181,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--window-wake" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.window_wake = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--motion-blur" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.motion_blur = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 println!("Snowhush for Wayland (Hyprland, Niri & generic)");
                 println!("Usage: snowhush-wayland [OPTIONS]");
@@ -198,6 +214,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --window-leak <FLOAT> Fraction of snowflakes that pass windows to ground [0.0-1.0, default: 0.35]");
                 println!("      --motion-shed <FLOAT> Window motion snow shedding sensitivity [default: 1.0]");
                 println!("      --cursor-force <FLOAT> Cursor displacement and wind force on snowflakes [default: 1.0]");
+                println!("      --window-wake <FLOAT> Moving window aerodynamic wake on airborne snow [default: 1.0]");
+                println!("      --motion-blur <FLOAT> Snowflake motion streak blur multiplier [default: 1.0]");
                 println!("  -h, --help                Print help");
                 return Ok(());
             }

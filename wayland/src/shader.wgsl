@@ -12,6 +12,7 @@ struct Uniforms {
     light: vec4<f32>,
     shadow_tint: vec4<f32>,
     occluders: array<vec4<f32>, 16>,
+    motion_blur: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -49,10 +50,11 @@ fn sprite_vertex(
     sprite: SpriteIn,
 ) -> SpriteOut {
     let pixels = sprite.size * uniforms.scale;
-    let travel = sprite.velocity * 0.018;
-    let smear = min(length(travel), sprite.size * select(2.2, 1.2, sprite.lump > 0.0));
+    let mb = uniforms.motion_blur.x;
+    let travel = sprite.velocity * (0.018 * mb);
+    let smear = min(length(travel), sprite.size * select(2.2, 1.2, sprite.lump > 0.0) * mb);
     var streak = vec2<f32>(0.0, 0.0);
-    if (smear > 0.25) {
+    if (mb > 0.01 && smear > 0.25) {
         streak = normalize(travel) * smear * uniforms.scale;
     }
     let reach = select(1.0, 1.3, sprite.lump > 0.0);

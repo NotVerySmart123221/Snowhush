@@ -382,15 +382,13 @@ impl CompositorTracker for HyprlandTracker {
             state.is_locked = is_locked;
 
             let mut desktop_window_ids = HashSet::new();
-            let mut lock_shm_found = false;
-
             // Check Quickshell explicit ledges via /dev/shm/snowhush_ledges.json
             if self.config.track_layers || is_locked {
                 if let Ok(content) = std::fs::read_to_string("/dev/shm/snowhush_ledges.json") {
                     if let Ok(shm_list) = serde_json::from_str::<Vec<ShmLedge>>(&content) {
                         for ledge in shm_list {
                             if ledge.id == "qs-lockscreen" {
-                                if ledge.visible && ledge.width > 20.0 && ledge.height > 20.0 {
+                                if is_locked && ledge.visible && ledge.width > 20.0 && ledge.height > 20.0 {
                                     let mut hasher = DefaultHasher::new();
                                     "qs-shm-".hash(&mut hasher);
                                     ledge.id.hash(&mut hasher);
@@ -403,7 +401,6 @@ impl CompositorTracker for HyprlandTracker {
                                         height: ledge.height,
                                     };
                                     targets.insert(id, (frame, ledge.radius, true, -1000));
-                                    lock_shm_found = true;
                                 }
                                 continue;
                             }
@@ -457,22 +454,6 @@ impl CompositorTracker for HyprlandTracker {
                         }
                     }
                 }
-            }
-
-            // If locked and no explicit qs-lockscreen was found, generate fallback centered lock dialog ledge
-            if is_locked && !lock_shm_found {
-                let lock_w = (screen_width * 0.35).clamp(380.0, 560.0);
-                let lock_h = 240.0;
-                let lock_x = (screen_width - lock_w) / 2.0;
-                let lock_y = (screen_height - lock_h) / 2.0;
-                let lock_frame = Rect {
-                    x: lock_x,
-                    y: screen_height - (lock_y + lock_h),
-                    width: lock_w,
-                    height: lock_h,
-                };
-                let lock_id = 0x710c_5c23; // "lockscr"
-                targets.insert(lock_id, (lock_frame, 16.0, true, -1000));
             }
 
             // Layer surfaces fallback / additional (only when not locked)

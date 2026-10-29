@@ -517,9 +517,19 @@ impl SnowSimulation {
             ..Sprite::default()
         });
         let motes = self.air.motes.iter().map(|mote| {
-            let t = mote.age / mote.life;
-            let fade = (mote.age / 0.06).min(1.0) * (1.0 - t).powf(1.5);
-            Sprite { position: mote.position, size: mote.size * (1.0 + t), alpha: mote.alpha * fade, soft: 1.0, tint: [1.0; 3], ..Sprite::default() }
+            let t = (mote.age / mote.life).clamp(0.0, 1.0);
+            let expansion = 1.0 + 2.0 * (1.0 - (-3.2 * t).exp());
+            let fade_in = (mote.age / 0.08).min(1.0);
+            let fade_out = (1.0 - t).powf(1.6);
+            let alpha = (mote.alpha * fade_in * fade_out).clamp(0.0, 1.0);
+            Sprite {
+                position: mote.position,
+                size: mote.size * expansion,
+                alpha,
+                soft: 1.0,
+                tint: [1.0; 3],
+                ..Sprite::default()
+            }
         });
         let mut count = 0;
         for (slot, sprite) in buffer.iter_mut().zip(flakes.chain(grains).chain(motes)) {
@@ -717,8 +727,6 @@ impl SnowSimulation {
         if !self.windows_solid {
             return;
         }
-        let speed = velocity.length().min(3000.0);
-        let spray_share = (smoothstep(15.0, 300.0, speed) * 0.75).max(0.35);
 
         let swept_min_x = old_frame.min_x().min(new_frame.min_x());
         let swept_max_x = old_frame.max_x().max(new_frame.max_x());
@@ -754,8 +762,6 @@ impl SnowSimulation {
                 continue;
             }
 
-            let mut pushed_left = 0.0;
-            let mut pushed_right = 0.0;
             let mut any_removed = false;
 
             for col in col_start..=col_end {
@@ -797,29 +803,14 @@ impl SnowSimulation {
                         any_removed = true;
 
                         let area = removed * COLUMN_WIDTH;
-                        let sprayed = if spray_share > 0.0 {
-                            self.air.emit_window_plow(
-                                area * spray_share,
-                                V2::new(x, win_bottom),
-                                velocity + V2::new(0.0, 30.0),
-                            )
-                        } else {
-                            0.0
-                        };
-
-                        let leftover = area - sprayed;
-                        if velocity.x > 15.0 {
-                            pushed_right += leftover;
-                        } else if velocity.x < -15.0 {
-                            pushed_left += leftover;
-                        } else {
-                            let center_x = (new_frame.min_x() + new_frame.max_x()) * 0.5;
-                            if x < center_x {
-                                pushed_left += leftover;
-                            } else {
-                                pushed_right += leftover;
-                            }
-                        }
+                        self.air.emit_window_scatter(
+                            area,
+                            x,
+                            surface_y,
+                            win_bottom,
+                            new_frame,
+                            velocity,
+                        );
                     }
                 }
             }
@@ -827,22 +818,7 @@ impl SnowSimulation {
             if any_removed {
                 self.air.heights_changed = true;
                 self.air.last_window_motion = self.air.clock;
-                layer.agitation = (layer.agitation + 12.0).min(50.0);
-
-                if pushed_left > 0.0 {
-                    let deposit_x = new_frame.min_x() - COLUMN_WIDTH * 2.0;
-                    let missed = layer.deposit(pushed_left, deposit_x, true);
-                    if missed > 0.0 {
-                        self.air.drop_past(layer, missed, deposit_x, -speed.min(100.0));
-                    }
-                }
-                if pushed_right > 0.0 {
-                    let deposit_x = new_frame.max_x() + COLUMN_WIDTH * 2.0;
-                    let missed = layer.deposit(pushed_right, deposit_x, true);
-                    if missed > 0.0 {
-                        self.air.drop_past(layer, missed, deposit_x, speed.min(100.0));
-                    }
-                }
+                layer.agitation = (layer.agitation + 15.0).min(60.0);
             }
         }
     }
@@ -2032,17 +2008,17 @@ impl Air {
 
         // Add cloud motes (эффект облачков) for the cursor
         let random = &mut self.random;
-        if (random.next() < 0.45 || speed > 150.0) && self.motes.len() < MAX_MOTES {
-            let mote_v = velocity * random.range(0.25, 0.65)
-                + outward * (speed * random.range(0.08, 0.25))
-                + V2::new(random.range(-35.0, 35.0), random.range(20.0, 80.0));
+        if (random.next() < 0.55 || speed > 120.0) && self.motes.len() < MAX_MOTES {
+            let mote_v = velocity * random.range(0.3, 0.7)
+                + outward * (speed * random.range(0.1, 0.3))
+                + V2::new(random.range(-35.0, 35.0), random.range(30.0, 90.0));
             self.motes.push(Mote {
                 position: origin + V2::new(random.range(-3.0, 3.0), random.range(-1.0, 4.0)),
                 velocity: mote_v,
-                size: random.range(7.0, 16.0),
-                alpha: random.range(0.08, 0.18),
+                size: random.range(14.0, 32.0),
+                alpha: random.range(0.20, 0.40),
                 age: 0.0,
-                life: random.range(0.5, 1.2),
+                life: random.range(0.6, 1.4),
             });
         }
 
@@ -2077,69 +2053,134 @@ impl Air {
 
         // Billowing cloud motes (эффект облачков)
         let r = &mut self.random;
-        let mote_chance = (area / 4.0).clamp(0.25, 0.9);
+        let mote_chance = (area / 3.0).clamp(0.35, 0.95);
         if r.next() < mote_chance && self.motes.len() < MAX_MOTES {
-            let mote_vx = dir * r.range(speed * 0.35, speed * 0.85) + r.range(-20.0, 20.0);
-            let mote_vy = r.range(30.0, 140.0);
+            let mote_vx = dir * r.range(speed * 0.4, speed * 0.9) + r.range(-20.0, 20.0);
+            let mote_vy = r.range(40.0, 160.0);
             self.motes.push(Mote {
                 position: origin + V2::new(r.range(-4.0, 4.0), r.range(0.0, 6.0)),
                 velocity: V2::new(mote_vx, mote_vy),
-                size: r.range(8.0, 18.0),
-                alpha: r.range(0.08, 0.20),
+                size: r.range(18.0, 38.0),
+                alpha: r.range(0.20, 0.40),
                 age: 0.0,
                 life: r.range(0.7, 1.5),
             });
         }
     }
 
-    /// Converts snow plowed by a moving window into physical grains AND cloud motes.
-    fn emit_window_plow(&mut self, area: f32, origin: V2, velocity: V2) -> f32 {
-        if area <= 0.05 {
-            return 0.0;
+    /// Converts displaced snow from a moving or pressing window into physical grains AND cloud motes.
+    /// Preserves 100% of the snow volume, flings plowed snow forward/outward, and sprays crushed snow up and to the sides.
+    fn emit_window_scatter(
+        &mut self,
+        area: f32,
+        col_x: f32,
+        surface_y: f32,
+        win_bottom: f32,
+        frame: Rect,
+        velocity: V2,
+    ) {
+        if area <= 0.02 {
+            return;
         }
+
         let speed = velocity.length();
-        let count = ((area / 1.6) as usize + 1).clamp(1, 5);
+        let win_center_x = (frame.min_x() + frame.max_x()) * 0.5;
+        let half_w = (frame.width * 0.5).max(10.0);
+        let rel_x = ((col_x - win_center_x) / half_w).clamp(-1.0, 1.0);
+        let side_dir = if rel_x < 0.0 { -1.0 } else { 1.0 };
+
+        let downward_speed = (-velocity.y).max(0.0);
+        let horiz_speed = velocity.x.abs();
+        let is_crushing = downward_speed > horiz_speed * 0.6 || downward_speed > 25.0;
+
+        let room = MAX_GRAINS.saturating_sub(self.grains.len());
+        if room == 0 {
+            self.overflow.push((area, col_x));
+            return;
+        }
+        let count = room.min(((area / 1.4) as usize + 1).clamp(1, 5));
         let share = area / count as f32;
 
         for _ in 0..count {
-            if self.grains.len() >= MAX_GRAINS {
-                break;
-            }
             let r = &mut self.random;
-            let vx = velocity.x * r.range(0.7, 1.4) + r.range(-25.0, 25.0);
-            let vy = r.range(35.0, 160.0) + speed * 0.12 * r.range(0.2, 1.0);
+            let (vx, vy, spawn_pos) = if is_crushing {
+                // Downward crushing: erupt violently upwards and outwards to the sides
+                let edge_x = if side_dir < 0.0 { frame.min_x() } else { frame.max_x() };
+                let t_edge = r.range(0.25, 0.85);
+                let px = col_x * (1.0 - t_edge) + edge_x * t_edge + r.range(-3.0, 3.0);
+                let py = win_bottom + r.range(1.0, 5.0);
+
+                let outward_burst = side_dir * (r.range(80.0, 220.0) + (1.0 + rel_x.abs()) * 65.0 + downward_speed * 0.4);
+                let upward_burst = r.range(130.0, 320.0) + downward_speed * 0.6;
+                let vx = outward_burst + velocity.x * 0.25 + r.range(-20.0, 20.0);
+                let vy = upward_burst;
+                (vx, vy, V2::new(px, py))
+            } else {
+                // Horizontal plowing: aggressively fling/scatter snow forward, outward and upward
+                let move_dir = if velocity.x >= 0.0 { 1.0 } else { -1.0 };
+                let fling_x = velocity.x * r.range(1.2, 2.0) + side_dir * r.range(30.0, 90.0) + r.range(-20.0, 20.0);
+                let fling_y = r.range(100.0, 300.0) + speed * r.range(0.15, 0.4);
+                let px = col_x + move_dir * r.range(2.0, 8.0);
+                let py = (surface_y.min(win_bottom) + r.range(1.0, 4.0)).max(0.0);
+                (fling_x, fling_y, V2::new(px, py))
+            };
+
+            let is_lump = self.random.next() < 0.25;
             self.grains.push(Grain {
-                position: origin + V2::new(r.range(-2.0, 2.0), r.range(-1.0, 3.0)),
+                position: spawn_pos,
                 velocity: V2::new(vx, vy),
                 area: share,
-                size: (share.sqrt() * 1.1).clamp(1.2, 3.8),
-                lump: 0.0,
+                size: (share.sqrt() * 1.15).clamp(1.2, 4.5),
+                lump: if is_lump { self.random.range(0.2, 0.65) } else { 0.0 },
                 blown: false,
             });
         }
 
+        // Billowing clouds (эффект облачков)
         let r = &mut self.random;
-        if self.motes.len() < MAX_MOTES {
-            let mote_vx = velocity.x * r.range(0.3, 0.7) + r.range(-20.0, 20.0);
-            let mote_vy = r.range(20.0, 80.0) + speed * 0.08;
+        let mote_chance = (area / 2.5).clamp(0.2, 0.7);
+        if r.next() < mote_chance && self.motes.len() < MAX_MOTES {
+            let mote_vx = if is_crushing {
+                side_dir * (r.range(60.0, 180.0) + downward_speed * 0.3) + velocity.x * 0.2 + r.range(-20.0, 20.0)
+            } else {
+                velocity.x * r.range(0.6, 1.4) + side_dir * r.range(25.0, 70.0) + r.range(-20.0, 20.0)
+            };
+            let mote_vy = r.range(60.0, 200.0) + speed * 0.12;
+            let spawn_x = col_x + side_dir * r.range(2.0, 10.0);
+            let spawn_y = win_bottom + r.range(2.0, 6.0);
+
+            // Large billowing mist cloud
             self.motes.push(Mote {
-                position: origin + V2::new(r.range(-3.0, 3.0), r.range(0.0, 5.0)),
-                velocity: V2::new(mote_vx, mote_vy),
-                size: r.range(8.0, 18.0),
-                alpha: r.range(0.08, 0.18),
+                position: V2::new(spawn_x, spawn_y),
+                velocity: V2::new(mote_vx * 0.6, mote_vy * 0.7),
+                size: r.range(20.0, 45.0),
+                alpha: r.range(0.18, 0.35),
                 age: 0.0,
-                life: r.range(0.5, 1.2),
+                life: r.range(0.8, 1.5),
             });
+
+            // Bright dense core puff if displacement is prominent
+            if area > 1.2 && self.motes.len() < MAX_MOTES {
+                let r2 = &mut self.random;
+                self.motes.push(Mote {
+                    position: V2::new(spawn_x + r2.range(-3.0, 3.0), spawn_y + r2.range(-1.0, 3.0)),
+                    velocity: V2::new(mote_vx * 0.85, mote_vy * 0.9),
+                    size: r2.range(12.0, 22.0),
+                    alpha: r2.range(0.28, 0.48),
+                    age: 0.0,
+                    life: r2.range(0.5, 1.0),
+                });
+            }
         }
-        area
     }
 
     fn advance_motes(&mut self, dt: f32) {
         if self.motes.is_empty() {
             return;
         }
-        let damping = (-3.2 * dt).exp();
-        let drift = self.wind_speed() * 0.4;
+        let damping = (-3.8 * dt).exp();
+        let drift = self.wind_speed() * 0.45;
+        let clock = self.clock as f32;
         let mut i = self.motes.len();
         while i > 0 {
             i -= 1;
@@ -2148,9 +2189,12 @@ impl Air {
             if mote.age >= mote.life {
                 self.motes.swap_remove(i);
             } else {
-                mote.velocity.y -= 35.0 * dt;
+                let progress = (mote.age / mote.life).clamp(0.0, 1.0);
+                let lift = (1.0 - progress * 2.0).max(-0.5) * 15.0;
+                mote.velocity.y += (lift - 6.0) * dt;
                 mote.velocity *= damping;
-                mote.position += (mote.velocity + V2::new(drift, 0.0)) * dt;
+                let turbulence = ((mote.position.y * 0.04 + clock * 2.2).sin() * 12.0) * (1.0 - progress);
+                mote.position += (mote.velocity + V2::new(drift + turbulence, 0.0)) * dt;
             }
         }
     }

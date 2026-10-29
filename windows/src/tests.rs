@@ -836,6 +836,60 @@ fn window_plow_emits_physical_grains_and_clouds() {
 }
 
 #[test]
+fn window_downward_crush_sprays_snow_up_and_outward() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.thaws = false;
+
+    // Place a snowdrift on the ground (height = 30) spanning the full window width (cols 100..300 = x: 200..600)
+    for i in 100..300 {
+        sim.layers_mut()[0].set(i, 30.0);
+    }
+    sim.layers_mut()[0].refresh_top();
+
+    // Window hovers just at the top of the drift (y = 30.0)
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 200.0, y: 30.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.016, &none, &none, false);
+
+    // Rapidly press the window DOWN into the drift to y = 5.0 (downward velocity = -1560 px/s)
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 200.0, y: 5.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.016, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+
+    // Verify upward and outward spray of grains
+    let upward_grains = sprites[..count].iter().filter(|s| {
+        ((s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05) && s.velocity.y > 100.0
+    }).count();
+
+    let left_spray = sprites[..count].iter().filter(|s| {
+        ((s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05) && s.velocity.x < -40.0
+    }).count();
+
+    let right_spray = sprites[..count].iter().filter(|s| {
+        ((s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05) && s.velocity.x > 40.0
+    }).count();
+
+    assert!(upward_grains > 10, "downward crush must spray grains upward: {upward_grains}");
+    assert!(left_spray > 3, "downward crush must spray grains to the left: {left_spray}");
+    assert!(right_spray > 3, "downward crush must spray grains to the right: {right_spray}");
+}
+
+#[test]
 fn test_lockscreen_stashes_desktop_windows_and_collects_on_lock_card() {
     let none = HashSet::new();
     let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);

@@ -233,6 +233,7 @@ struct Air {
     window_leak: f32,
     pub window_wake: f32,
     pub motion_shed: f32,
+    pub shed_threshold: f32,
     pub cursor_force: f32,
     pub speed_factor: f32,
     pub sway_factor: f32,
@@ -279,6 +280,7 @@ pub struct SnowSimulation {
     pub window_leak: f32,
     pub window_wake: f32,
     pub motion_shed: f32,
+    pub shed_threshold: f32,
     pub cursor_force: f32,
     pub speed_factor: f32,
     pub sway_factor: f32,
@@ -342,6 +344,7 @@ impl SnowSimulation {
             window_leak: 0.35,
             window_wake: 1.0,
             motion_shed: 1.0,
+            shed_threshold: 250.0,
             cursor_force: 1.0,
             speed_factor: 1.0,
             sway_factor: 1.0,
@@ -388,6 +391,7 @@ impl SnowSimulation {
                 window_leak: 0.35,
                 window_wake: 1.0,
                 motion_shed: 1.0,
+                shed_threshold: 250.0,
                 cursor_force: 1.0,
                 speed_factor: 1.0,
                 sway_factor: 1.0,
@@ -547,6 +551,7 @@ impl SnowSimulation {
         self.air.window_leak = self.window_leak;
         self.air.window_wake = self.window_wake;
         self.air.motion_shed = self.motion_shed;
+        self.air.shed_threshold = self.shed_threshold;
         self.air.cursor_force = self.cursor_force;
         self.air.speed_factor = self.speed_factor;
         self.air.sway_factor = self.sway_factor;
@@ -775,7 +780,9 @@ impl SnowSimulation {
                 let max_x_diff = (surface.frame.max_x() - old_frame.max_x()).abs() / dt;
                 let min_y_diff = (surface.frame.min_y() - old_frame.min_y()).abs() / dt;
                 let max_y_diff = (surface.frame.max_y() - old_frame.max_y()).abs() / dt;
-                if speed > 15.0 || min_x_diff > 15.0 || max_x_diff > 15.0 || min_y_diff > 15.0 || max_y_diff > 15.0 {
+                let max_speed = speed.max(min_x_diff).max(max_x_diff).max(min_y_diff).max(max_y_diff);
+                let effective_threshold = (self.shed_threshold / self.motion_shed.max(0.1)).max(10.0);
+                if max_speed >= effective_threshold {
                     active_movers.push((surface.id, old_frame, surface.frame, surface.corner_radius, velocity));
                 }
             }
@@ -1745,6 +1752,7 @@ impl Air {
         let win_vy = displacement.y / elapsed;
         let win_vx = displacement.x / elapsed;
         let jumped = speed > JUMP_SPEED;
+        let effective_threshold = (self.shed_threshold / self.motion_shed.max(0.1)).max(10.0);
         if jumped {
             // The window vanished from under the snow or jumped off-screen
             let launch_vel = if win_vy > 50.0 {
@@ -1756,21 +1764,26 @@ impl Air {
             ledge.offset = V2::ZERO;
             ledge.offset_velocity = V2::ZERO;
             ledge.track_velocity = V2::ZERO;
-        } else if self.motion_shed > 0.01 {
-            let up_threshold = (140.0 / self.motion_shed).clamp(50.0, 320.0);
-            let general_threshold = (1000.0 / self.motion_shed).clamp(200.0, 4000.0);
-            if win_vy > up_threshold {
-                let excess = (win_vy - up_threshold) / (up_threshold * 0.6);
-                let share = (excess * 1.4 * self.motion_shed).clamp(0.4, 1.0);
-                let toss_y = win_vy * 1.35 + self.random.range(220.0, 480.0);
-                let toss_x = win_vx * 0.6 + self.random.range(-70.0, 70.0);
-                self.shed(ledge, share, V2::new(toss_x, toss_y));
-            } else if speed > general_threshold {
-                let excess = (speed - general_threshold) / (general_threshold * 0.6);
-                let share = (excess * 1.2 * self.motion_shed).clamp(0.25, 1.0);
-                let vy_toss = win_vy * 0.45 + self.random.range(40.0, 140.0);
-                let toss = V2::new(win_vx * 0.5 + self.random.range(-60.0, 60.0), vy_toss);
-                self.shed(ledge, share, toss);
+            for i in 0..ledge.count() {
+                ledge.set(i, 0.0);
+            }
+        } else if speed >= effective_threshold && self.motion_shed > 0.01 {
+            // Windows do not push snow; at or above shed_threshold they sweep the snow off!
+            let sweep_vel = if win_vy > 30.0 {
+                let toss_y = (win_vy * 1.35).clamp(280.0, 2400.0) + self.random.range(150.0, 350.0);
+                let toss_x = win_vx * 0.5 + self.random.range(-70.0, 70.0);
+                V2::new(toss_x, toss_y)
+            } else {
+                let toss_y = self.random.range(120.0, 300.0) + speed * 0.25;
+                let toss_x = win_vx * 0.35 + self.random.range(-60.0, 60.0);
+                V2::new(toss_x, toss_y)
+            };
+            self.shed(ledge, 1.0, sweep_vel);
+            ledge.offset = V2::ZERO;
+            ledge.offset_velocity = V2::ZERO;
+            ledge.track_velocity = V2::ZERO;
+            for i in 0..ledge.count() {
+                ledge.set(i, 0.0);
             }
         }
 
@@ -2391,11 +2404,12 @@ impl Air {
                 let vy = upward_burst;
                 (vx, vy, V2::new(px, py))
             } else {
-                // Horizontal plowing: aggressively fling/scatter snow forward, outward and upward
-                let move_dir = if velocity.x >= 0.0 { 1.0 } else { -1.0 };
-                let fling_x = velocity.x * r.range(1.2, 2.0) + side_dir * r.range(30.0, 90.0) + r.range(-20.0, 20.0);
-                let fling_y = r.range(100.0, 300.0) + speed * r.range(0.15, 0.4);
-                let px = col_x + move_dir * r.range(2.0, 8.0);
+                // Horizontal sweeping: fling/scatter snow outward and upward, NOT pushed forward
+                let side_burst = side_dir * (r.range(90.0, 240.0) + (1.0 + rel_x.abs()) * 70.0);
+                let upward_burst = r.range(120.0, 320.0) + speed * 0.25;
+                let fling_x = side_burst + velocity.x * 0.25 + r.range(-20.0, 20.0);
+                let fling_y = upward_burst;
+                let px = col_x + side_dir * r.range(2.0, 8.0);
                 let py = (surface_y.min(win_bottom) + r.range(1.0, 4.0)).max(0.0);
                 (fling_x, fling_y, V2::new(px, py))
             };

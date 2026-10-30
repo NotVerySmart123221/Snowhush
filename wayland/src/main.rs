@@ -117,6 +117,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--shed-threshold" | "--window-threshold" | "--motion-threshold" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.shed_threshold = val.clamp(1.0, 5000.0);
+                    }
+                    i += 1;
+                }
+            }
             "--cursor-force" | "--cursor-factor" => {
                 if i + 1 < args.len() {
                     if let Ok(val) = args[i + 1].parse::<f32>() {
@@ -284,6 +292,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --static-wind <FLOAT> Ambient horizontal wind speed in px/s [default: 20.0]");
                 println!("      --window-leak <FLOAT> Fraction of snowflakes that pass windows to ground [0.0-1.0, default: 0.35]");
                 println!("      --motion-shed <FLOAT> Window motion snow shedding sensitivity [default: 1.0]");
+                println!("      --shed-threshold <PX> Window speed threshold for sweeping/shedding snow in px/s [default: 250.0]");
                 println!("      --cursor-force <FLOAT> Cursor displacement and wind force on snowflakes [default: 1.0]");
                 println!("      --spray-force <FLOAT> Explosive snow spray impulse force [default: 1.0]");
                 println!("      --ejection-force <FLOAT> Snowdrift kickback and wind erosion ejection force [default: 1.0]");
@@ -304,8 +313,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "Starting Snowhush Wayland (snowfall: {:?}, top_margin: {}, layers: {}, melt: {} (x{}), wind: {} (x{}), ws_sweep: {}, static_wind: {}, leak: {}, motion_shed: {}, cursor: {})...",
-        config.snowfall, config.top_margin, config.track_layers, config.melt, config.melt_rate, config.wind_accel, config.wind_factor, config.workspace_sweep, config.static_wind, config.window_leak, config.motion_shed, config.cursor_force
+        "Starting Snowhush Wayland (snowfall: {:?}, top_margin: {}, layers: {}, melt: {} (x{}), wind: {} (x{}), ws_sweep: {}, static_wind: {}, leak: {}, motion_shed: {}, shed_thresh: {}, cursor: {})...",
+        config.snowfall, config.top_margin, config.track_layers, config.melt, config.melt_rate, config.wind_accel, config.wind_factor, config.workspace_sweep, config.static_wind, config.window_leak, config.motion_shed, config.shed_threshold, config.cursor_force
     );
     SnowhushApp::run(config)?;
 

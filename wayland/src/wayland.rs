@@ -49,6 +49,7 @@ pub struct AppConfig {
     pub static_wind: f32,
     pub window_leak: f32,
     pub motion_shed: f32,
+    pub shed_threshold: f32,
     pub cursor_force: f32,
     pub cloud_density: f32,
     pub cloud_amount: f32,
@@ -88,6 +89,7 @@ impl Default for AppConfig {
             static_wind: 20.0,
             window_leak: 0.35,
             motion_shed: 1.0,
+            shed_threshold: 250.0,
             cursor_force: 1.0,
             cloud_density: 1.0,
             cloud_amount: 1.0,
@@ -139,6 +141,8 @@ pub struct JsonConfig {
     pub window_leak: f32,
     #[serde(default = "default_one")]
     pub motion_shed: f32,
+    #[serde(default = "default_shed_threshold")]
+    pub shed_threshold: f32,
     #[serde(default = "default_one")]
     pub cursor_force: f32,
     #[serde(default = "default_one")]
@@ -203,6 +207,10 @@ fn default_window_leak() -> f32 {
     0.35
 }
 
+fn default_shed_threshold() -> f32 {
+    250.0
+}
+
 impl JsonConfig {
     pub fn from_app_config(cfg: &AppConfig) -> Self {
         Self {
@@ -229,6 +237,7 @@ impl JsonConfig {
             static_wind: cfg.static_wind,
             window_leak: cfg.window_leak,
             motion_shed: cfg.motion_shed,
+            shed_threshold: cfg.shed_threshold,
             cursor_force: cfg.cursor_force,
             cloud_density: cfg.cloud_density,
             cloud_amount: cfg.cloud_amount,
@@ -276,6 +285,7 @@ impl JsonConfig {
             static_wind: self.static_wind,
             window_leak: self.window_leak,
             motion_shed: self.motion_shed,
+            shed_threshold: self.shed_threshold.clamp(1.0, 5000.0),
             cursor_force: self.cursor_force,
             cloud_density: self.cloud_density.clamp(0.0, 5.0),
             cloud_amount: self.cloud_amount.clamp(0.0, 5.0),
@@ -492,6 +502,7 @@ impl SnowhushApp {
         self.simulation.static_wind = new_cfg.static_wind;
         self.simulation.window_leak = new_cfg.window_leak;
         self.simulation.motion_shed = new_cfg.motion_shed;
+        self.simulation.shed_threshold = new_cfg.shed_threshold;
         self.simulation.cursor_force = new_cfg.cursor_force;
         self.simulation.cloud_density = new_cfg.cloud_density;
         self.simulation.cloud_amount = new_cfg.cloud_amount;

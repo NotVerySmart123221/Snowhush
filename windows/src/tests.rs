@@ -1247,3 +1247,76 @@ fn test_workspace_sweep_slider_controls_effect_strength() {
     let motes: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 1.0).abs() < 0.05).collect();
     assert!(!motes.is_empty(), "cloud motes must be spawned during workspace sweep");
 }
+
+#[test]
+fn test_windows_do_not_push_snow_below_shed_threshold() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.motion_shed = 1.0;
+    sim.shed_threshold = 300.0; // High speed threshold
+
+    // Accumulate snow on a window
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 400.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+    run(&mut sim, 15.0, AWAY);
+    assert!(sim.has_snow(), "snow should accumulate on the window");
+
+    // Move window at 50 px/s (well below 300.0 threshold): window does not push snow
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 305.0, y: 400.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    // 5px displacement over 0.1s = 50 px/s
+    sim.update_windows(&win2, 0.1, &none, &none, false);
+    sim.step(0.1, AWAY);
+
+    // No grains should be blown into high velocity sweeps
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    let high_speed_grains = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05 && s.velocity.x.abs() > 150.0).count();
+    assert_eq!(high_speed_grains, 0, "slow motion below threshold must not fling high speed grains");
+}
+
+#[test]
+fn test_windows_sweep_off_snow_at_or_above_shed_threshold() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.motion_shed = 1.0;
+    sim.shed_threshold = 100.0; // Fast threshold
+
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 400.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+    run(&mut sim, 15.0, AWAY);
+    assert!(sim.has_snow(), "snow should accumulate on the window");
+
+    // Move window fast: 10px in 0.02s = 500 px/s (well above 100.0)
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 310.0, y: 400.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.02, &none, &none, false);
+    sim.step(0.02, AWAY);
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05).collect();
+    assert!(!grains.is_empty(), "fast motion above threshold must sweep off snow into flying grains");
+}

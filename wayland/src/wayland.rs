@@ -87,7 +87,7 @@ impl Default for AppConfig {
             top_margin: 44.0,
             track_layers: true,
             sweep_ground: true,
-            melt: false,
+            melt: true,
             melt_rate: 4.0,
             wind_accel: true,
             wind_factor: 1.2,
@@ -97,7 +97,7 @@ impl Default for AppConfig {
             static_wind: 0.0,
             window_leak: 0.5,
             motion_shed: 1.0,
-            shed_threshold: 800.0,
+            shed_threshold: 450.0,
             cursor_force: 1.5,
             cloud_density: 0.15,
             cloud_amount: 1.5,
@@ -245,7 +245,7 @@ fn default_sweep_ground() -> bool {
 }
 
 fn default_melt() -> bool {
-    false
+    true
 }
 
 fn default_melt_rate() -> f32 {
@@ -273,7 +273,7 @@ fn default_window_leak() -> f32 {
 }
 
 fn default_shed_threshold() -> f32 {
-    800.0
+    450.0
 }
 
 fn default_cursor_force() -> f32 {

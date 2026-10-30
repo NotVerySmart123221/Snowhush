@@ -356,7 +356,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --static-wind <FLOAT> Ambient horizontal wind speed in px/s [default: 0.0]");
                 println!("      --window-leak <FLOAT> Fraction of snowflakes that pass windows to ground [0.0-1.0, default: 0.5]");
                 println!("      --motion-shed <FLOAT> Window motion snow shedding sensitivity [default: 1.0]");
-                println!("      --shed-threshold <PX> Window speed threshold for sweeping/shedding snow in px/s [default: 800.0]");
+                println!("      --shed-threshold <PX> Window speed threshold for sweeping/shedding snow in px/s [default: 450.0]");
                 println!("      --cursor-force <FLOAT> Cursor displacement and wind force on snowflakes [default: 1.5]");
                 println!("      --spray-force <FLOAT> Explosive snow spray impulse force [default: 3.0]");
                 println!("      --ejection-force <FLOAT> Snowdrift kickback and wind erosion ejection force [default: 3.0]");

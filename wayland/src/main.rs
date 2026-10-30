@@ -69,6 +69,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--wind-threshold" | "--wind-erosion-threshold" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.wind_erosion_threshold = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--wind-erosion-rate" | "--wind-rate" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.wind_erosion_rate = val.max(0.0);
+                    }
+                    i += 1;
+                }
+            }
             "--static-wind" => {
                 if i + 1 < args.len() {
                     if let Ok(val) = args[i + 1].parse::<f32>() {
@@ -181,6 +197,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--ejection-force" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.ejection_force = val.clamp(0.1, 5.0);
+                    }
+                    i += 1;
+                }
+            }
             "--window-wake" => {
                 if i + 1 < args.len() {
                     if let Ok(val) = args[i + 1].parse::<f32>() {
@@ -246,10 +270,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --melt-rate <FLOAT>   Snow thaw rate multiplier [default: 1.0]");
                 println!("      --no-wind-accel       Disable airborne snowflake acceleration on workspace switch");
                 println!("      --wind-factor <FLOAT> Wind gust strength multiplier [default: 1.0]");
+                println!("      --wind-threshold <PX> Wind speed threshold for surface snow erosion [default: 35.0]");
+                println!("      --wind-erosion-rate <FLOAT> Wind surface snow erosion rate multiplier [default: 1.0]");
                 println!("      --static-wind <FLOAT> Ambient horizontal wind speed in px/s [default: 20.0]");
                 println!("      --window-leak <FLOAT> Fraction of snowflakes that pass windows to ground [0.0-1.0, default: 0.35]");
                 println!("      --motion-shed <FLOAT> Window motion snow shedding sensitivity [default: 1.0]");
                 println!("      --cursor-force <FLOAT> Cursor displacement and wind force on snowflakes [default: 1.0]");
+                println!("      --spray-force <FLOAT> Explosive snow spray impulse force [default: 1.0]");
+                println!("      --ejection-force <FLOAT> Snowdrift kickback and wind erosion ejection force [default: 1.0]");
                 println!("      --window-wake <FLOAT> Moving window aerodynamic wake on airborne snow [default: 1.0]");
                 println!("      --motion-blur <FLOAT> Snowflake motion streak blur multiplier [default: 1.0]");
                 println!("      --no-fullscreen-snow  Disable snow accumulation while any window is fullscreen");

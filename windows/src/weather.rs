@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use crate::simulation::Random;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7,6 +8,21 @@ pub enum WeatherKind {
     Blizzard,
     Squall,
     Thaw,
+}
+
+impl FromStr for WeatherKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "calm" => Ok(WeatherKind::Calm),
+            "breeze" => Ok(WeatherKind::Breeze),
+            "blizzard" => Ok(WeatherKind::Blizzard),
+            "squall" => Ok(WeatherKind::Squall),
+            "thaw" => Ok(WeatherKind::Thaw),
+            _ => Err(()),
+        }
+    }
 }
 
 impl WeatherKind {
@@ -20,15 +36,9 @@ impl WeatherKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "calm" => Some(WeatherKind::Calm),
-            "breeze" => Some(WeatherKind::Breeze),
-            "blizzard" => Some(WeatherKind::Blizzard),
-            "squall" => Some(WeatherKind::Squall),
-            "thaw" => Some(WeatherKind::Thaw),
-            _ => None,
-        }
+        s.parse().ok()
     }
 
     pub fn targets(&self, random: &mut Random) -> WeatherParams {

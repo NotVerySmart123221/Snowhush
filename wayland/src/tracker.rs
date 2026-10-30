@@ -301,23 +301,23 @@ pub fn check_is_locked() -> bool {
         if let Ok(entries) = fs::read_dir("/proc") {
             for entry in entries.flatten() {
                 let file_name = entry.file_name();
-                if let Some(s) = file_name.to_str() {
-                    if let Ok(pid) = s.parse::<u32>() {
-                        if pid == my_pid {
-                            continue;
-                        }
-                        let cmdline_path = entry.path().join("cmdline");
-                        if let Ok(cmd) = fs::read(cmdline_path) {
-                            let cmd_str = String::from_utf8_lossy(&cmd);
-                            if cmd_str.contains("Lock.qml")
-                                || cmd_str.contains("hyprlock")
-                                || cmd_str.contains("swaylock")
-                                || cmd_str.contains("waylock")
-                                || cmd_str.contains("gtklock")
-                            {
-                                proc_locked = true;
-                                break;
-                            }
+                if let Some(s) = file_name.to_str()
+                    && let Ok(pid) = s.parse::<u32>()
+                {
+                    if pid == my_pid {
+                        continue;
+                    }
+                    let cmdline_path = entry.path().join("cmdline");
+                    if let Ok(cmd) = fs::read(cmdline_path) {
+                        let cmd_str = String::from_utf8_lossy(&cmd);
+                        if cmd_str.contains("Lock.qml")
+                            || cmd_str.contains("hyprlock")
+                            || cmd_str.contains("swaylock")
+                            || cmd_str.contains("waylock")
+                            || cmd_str.contains("gtklock")
+                        {
+                            proc_locked = true;
+                            break;
                         }
                     }
                 }
@@ -335,7 +335,7 @@ impl CompositorTracker for HyprlandTracker {
         let mut state = TrackedState::default();
 
         let now = Instant::now();
-        let dt = now.duration_since(self.last_frame_poll).as_secs_f32().min(0.05).max(0.001);
+        let dt = now.duration_since(self.last_frame_poll).as_secs_f32().clamp(0.001, 0.05);
         self.last_frame_poll = now;
 
         // Cursor position - fast socket query
@@ -384,10 +384,11 @@ impl CompositorTracker for HyprlandTracker {
 
             let mut desktop_window_ids = HashSet::new();
             // Check Quickshell explicit ledges via /dev/shm/snowhush_ledges.json
-            if self.config.track_layers || is_locked {
-                if let Ok(content) = std::fs::read_to_string("/dev/shm/snowhush_ledges.json") {
-                    if let Ok(shm_list) = serde_json::from_str::<Vec<ShmLedge>>(&content) {
-                        for ledge in shm_list {
+            if (self.config.track_layers || is_locked)
+                && let Ok(content) = std::fs::read_to_string("/dev/shm/snowhush_ledges.json")
+                && let Ok(shm_list) = serde_json::from_str::<Vec<ShmLedge>>(&content)
+            {
+                for ledge in shm_list {
                             if ledge.id == "qs-lockscreen" {
                                 if is_locked && ledge.visible && ledge.width > 20.0 && ledge.height > 20.0 {
                                     let mut hasher = DefaultHasher::new();
@@ -454,8 +455,6 @@ impl CompositorTracker for HyprlandTracker {
                             targets.insert(id, (frame, ledge.radius, true, -1000));
                         }
                     }
-                }
-            }
 
             // Layer surfaces fallback / additional (only when not locked)
             if !is_locked && self.config.track_layers

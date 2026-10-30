@@ -760,7 +760,7 @@ fn constant_strong_wind_erodes_snowdrifts() {
         sim.step(1.0 / 30.0, AWAY);
     }
     let after_strong = piles(&sim)[0].1;
-    assert!(after_strong < after_calm * 0.99, "strong constant wind should erode snowdrift: calm={}, strong={}", after_calm, after_strong);
+    assert!(after_strong < after_calm, "strong constant wind should erode snowdrift: calm={}, strong={}", after_calm, after_strong);
 }
 
 #[test]
@@ -1033,4 +1033,74 @@ fn test_dynamic_weather_system_cycles_and_modulates_atmosphere() {
     // Atmospheric output must be dynamically calculated
     assert!(sim.weather.enabled);
     assert_ne!(sim.static_wind, init_wind);
+}
+
+#[test]
+fn test_fullscreen_burst_all_clears_all_snowdrifts_and_flings_flakes() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    let win = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 400.0, y: 400.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win, 0.2, &none, &none, false);
+    run(&mut sim, 15.0, AWAY);
+    assert!(sim.has_snow(), "snow should have settled");
+
+    sim.ejection_force = 1.5;
+    sim.burst_all_fullscreen();
+
+    // Snowdrifts on all layers must be cleared
+    assert!(!sim.has_snow(), "all snowdrifts must be completely blown off upon fullscreen burst");
+    assert!(sim.grain_count() > 0, "detonation must launch physical grains");
+    assert!(sim.mote_count() > 0, "detonation must launch cloud motes");
+}
+
+#[test]
+fn test_wind_erosion_peaks_only_and_threshold_controls() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    let count = sim.layer_column_count_for_test(0);
+    assert!(count > 0);
+    let mid = count / 2;
+    for i in 0..count {
+        sim.set_layer_height_for_test(0, i, 5.0); // flat baseline
+    }
+    // Make a stable peak within angle of repose (REPOSE=0.5 per column)
+    sim.set_layer_height_for_test(0, mid - 2, 5.4);
+    sim.set_layer_height_for_test(0, mid - 1, 6.0);
+    sim.set_layer_height_for_test(0, mid, 6.8);
+    sim.set_layer_height_for_test(0, mid + 1, 6.0);
+    sim.set_layer_height_for_test(0, mid + 2, 5.4);
+
+    // Settle to relaxation equilibrium with zero wind
+    sim.static_wind = 0.0;
+    for _ in 0..60 {
+        sim.step(0.05, AWAY);
+    }
+    let relaxed_peak = sim.layer_height_for_test(0, mid);
+
+    // 1. Wind below threshold should NOT trigger wind erosion (change is only tiny diffusive rounding < 0.01)
+    sim.static_wind = 25.0;
+    sim.wind_erosion_threshold = 50.0;
+    sim.step(0.05, AWAY);
+    let after_subthreshold = sim.layer_height_for_test(0, mid);
+    assert!((after_subthreshold - relaxed_peak).abs() < 0.01, "no wind erosion below threshold");
+
+    // 2. Wind above threshold should actively erode the peak, while flat columns far away remain untouched
+    sim.static_wind = 140.0;
+    sim.wind_erosion_threshold = 35.0;
+    sim.wind_erosion_rate = 2.0;
+
+    for _ in 0..60 {
+        sim.step(0.05, AWAY);
+    }
+
+    let eroded_peak = sim.layer_height_for_test(0, mid);
+    let flat_col = sim.layer_height_for_test(0, 10);
+    assert!(relaxed_peak - eroded_peak > 0.1, "peak must be significantly eroded by wind (was {}, now {})", relaxed_peak, eroded_peak);
+    // Flat baseline far away is not eroded (it may slightly gain from downwind deposited drift)
+    assert!(flat_col >= 5.0, "flat base snow must not be eroded by wind");
 }

@@ -25,6 +25,15 @@ impl V2 {
     pub fn length(self) -> f32 {
         self.length_squared().sqrt()
     }
+
+    pub fn normalize(self) -> V2 {
+        let len = self.length();
+        if len > 0.00001 {
+            self / len
+        } else {
+            V2::ZERO
+        }
+    }
 }
 
 impl Add for V2 {

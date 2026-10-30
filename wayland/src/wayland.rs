@@ -43,6 +43,8 @@ pub struct AppConfig {
     pub melt_rate: f32,
     pub wind_accel: bool,
     pub wind_factor: f32,
+    pub wind_erosion_threshold: f32,
+    pub wind_erosion_rate: f32,
     pub static_wind: f32,
     pub window_leak: f32,
     pub motion_shed: f32,
@@ -54,6 +56,7 @@ pub struct AppConfig {
     pub spray_amount: f32,
     pub spray_size: f32,
     pub spray_force: f32,
+    pub ejection_force: f32,
     pub window_wake: f32,
     pub motion_blur: f32,
     pub no_fullscreen_snow: bool,
@@ -78,6 +81,8 @@ impl Default for AppConfig {
             melt_rate: 1.0,
             wind_accel: true,
             wind_factor: 1.0,
+            wind_erosion_threshold: 35.0,
+            wind_erosion_rate: 1.0,
             static_wind: 20.0,
             window_leak: 0.35,
             motion_shed: 1.0,
@@ -89,6 +94,7 @@ impl Default for AppConfig {
             spray_amount: 1.0,
             spray_size: 1.0,
             spray_force: 1.0,
+            ejection_force: 1.0,
             window_wake: 1.0,
             motion_blur: 1.0,
             no_fullscreen_snow: false,
@@ -119,6 +125,10 @@ pub struct JsonConfig {
     pub wind_accel: bool,
     #[serde(default = "default_one")]
     pub wind_factor: f32,
+    #[serde(default = "default_wind_erosion_threshold")]
+    pub wind_erosion_threshold: f32,
+    #[serde(default = "default_one")]
+    pub wind_erosion_rate: f32,
     #[serde(default = "default_static_wind")]
     pub static_wind: f32,
     #[serde(default = "default_window_leak")]
@@ -141,6 +151,8 @@ pub struct JsonConfig {
     pub spray_size: f32,
     #[serde(default = "default_one")]
     pub spray_force: f32,
+    #[serde(default = "default_one")]
+    pub ejection_force: f32,
     #[serde(default = "default_one")]
     pub window_wake: f32,
     #[serde(default = "default_one")]
@@ -169,6 +181,10 @@ fn default_false() -> bool {
 
 fn default_one() -> f32 {
     1.0
+}
+
+fn default_wind_erosion_threshold() -> f32 {
+    35.0
 }
 
 fn default_weather_mode() -> String {
@@ -203,6 +219,8 @@ impl JsonConfig {
             melt_rate: cfg.melt_rate,
             wind_accel: cfg.wind_accel,
             wind_factor: cfg.wind_factor,
+            wind_erosion_threshold: cfg.wind_erosion_threshold,
+            wind_erosion_rate: cfg.wind_erosion_rate,
             static_wind: cfg.static_wind,
             window_leak: cfg.window_leak,
             motion_shed: cfg.motion_shed,
@@ -214,6 +232,7 @@ impl JsonConfig {
             spray_amount: cfg.spray_amount,
             spray_size: cfg.spray_size,
             spray_force: cfg.spray_force,
+            ejection_force: cfg.ejection_force,
             window_wake: cfg.window_wake,
             motion_blur: cfg.motion_blur,
             no_fullscreen_snow: cfg.no_fullscreen_snow,
@@ -246,6 +265,8 @@ impl JsonConfig {
             melt_rate: self.melt_rate,
             wind_accel: self.wind_accel,
             wind_factor: self.wind_factor,
+            wind_erosion_threshold: self.wind_erosion_threshold.clamp(0.0, 300.0),
+            wind_erosion_rate: self.wind_erosion_rate.clamp(0.0, 10.0),
             static_wind: self.static_wind,
             window_leak: self.window_leak,
             motion_shed: self.motion_shed,
@@ -257,6 +278,7 @@ impl JsonConfig {
             spray_amount: self.spray_amount.clamp(0.1, 5.0),
             spray_size: self.spray_size.clamp(0.1, 5.0),
             spray_force: self.spray_force.clamp(0.1, 5.0),
+            ejection_force: self.ejection_force.clamp(0.1, 5.0),
             window_wake: self.window_wake.clamp(0.0, 5.0),
             motion_blur: self.motion_blur.clamp(0.0, 5.0),
             no_fullscreen_snow: self.no_fullscreen_snow,
@@ -279,16 +301,10 @@ pub fn config_path() -> std::path::PathBuf {
 
 pub fn load_config_file() -> Option<(AppConfig, std::time::SystemTime)> {
     let p = config_path();
-    if let Ok(meta) = std::fs::metadata(&p) {
-        if let Ok(mtime) = meta.modified() {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                if let Ok(json_cfg) = serde_json::from_str::<JsonConfig>(&content) {
-                    return Some((json_cfg.to_app_config(), mtime));
-                }
-            }
-        }
-    }
-    None
+    let mtime = std::fs::metadata(&p).ok()?.modified().ok()?;
+    let content = std::fs::read_to_string(&p).ok()?;
+    let json_cfg = serde_json::from_str::<JsonConfig>(&content).ok()?;
+    Some((json_cfg.to_app_config(), mtime))
 }
 
 pub fn save_config_file(cfg: &AppConfig) {
@@ -399,31 +415,7 @@ impl SnowhushApp {
             track_layers: config.track_layers,
         };
         let tracker = create_tracker(tracker_config);
-        let mut simulation = SnowSimulation::new(1920.0, 1080.0, config.snowfall);
-        simulation.set_density(config.density);
-        simulation.speed_factor = config.speed_factor;
-        simulation.sway_factor = config.sway_factor;
-        simulation.thaws = config.melt;
-        simulation.thaw_rate_multiplier = config.melt_rate;
-        simulation.wind_accel = config.wind_accel;
-        simulation.wind_factor = config.wind_factor;
-        simulation.static_wind = config.static_wind;
-        simulation.window_leak = config.window_leak;
-        simulation.motion_shed = config.motion_shed;
-        simulation.cursor_force = config.cursor_force;
-        simulation.cloud_density = config.cloud_density;
-        simulation.cloud_amount = config.cloud_amount;
-        simulation.cloud_size = config.cloud_size;
-        simulation.spray_density = config.spray_density;
-        simulation.spray_amount = config.spray_amount;
-        simulation.spray_size = config.spray_size;
-        simulation.spray_force = config.spray_force;
-        simulation.window_wake = config.window_wake;
-        simulation.motion_blur = config.motion_blur;
-        simulation.no_fullscreen_snow = config.no_fullscreen_snow;
-        simulation.grain_speed = config.grain_speed;
-        simulation.grain_gravity = config.grain_gravity;
-        simulation.configure_weather(config.dynamic_weather, &config.weather_mode, config.weather_cycle_speed);
+        let simulation = SnowSimulation::new(1920.0, 1080.0, config.snowfall);
 
         if load_config_file().is_none() {
             save_config_file(&config);
@@ -446,9 +438,10 @@ impl SnowhushApp {
             start_time: Instant::now(),
             last_frame: Instant::now(),
             frame_count: 0,
-            config,
+            config: AppConfig::default(),
             last_config_mtime,
         };
+        app.apply_config(config);
 
         log::info!("Snowhush Wayland loop started");
 
@@ -474,6 +467,46 @@ impl SnowhushApp {
         Ok(())
     }
 
+    pub fn apply_config(&mut self, new_cfg: AppConfig) {
+        if new_cfg.snowfall != self.config.snowfall {
+            self.simulation.set_snowfall(new_cfg.snowfall);
+        }
+        if (new_cfg.density - self.config.density).abs() > 0.001 {
+            self.simulation.set_density(new_cfg.density);
+        }
+        self.simulation.speed_factor = new_cfg.speed_factor;
+        self.simulation.sway_factor = new_cfg.sway_factor;
+        self.simulation.thaws = new_cfg.melt;
+        self.simulation.thaw_rate_multiplier = new_cfg.melt_rate;
+        self.simulation.wind_accel = new_cfg.wind_accel;
+        self.simulation.wind_factor = new_cfg.wind_factor;
+        self.simulation.wind_erosion_threshold = new_cfg.wind_erosion_threshold;
+        self.simulation.wind_erosion_rate = new_cfg.wind_erosion_rate;
+        self.simulation.static_wind = new_cfg.static_wind;
+        self.simulation.window_leak = new_cfg.window_leak;
+        self.simulation.motion_shed = new_cfg.motion_shed;
+        self.simulation.cursor_force = new_cfg.cursor_force;
+        self.simulation.cloud_density = new_cfg.cloud_density;
+        self.simulation.cloud_amount = new_cfg.cloud_amount;
+        self.simulation.cloud_size = new_cfg.cloud_size;
+        self.simulation.spray_density = new_cfg.spray_density;
+        self.simulation.spray_amount = new_cfg.spray_amount;
+        self.simulation.spray_size = new_cfg.spray_size;
+        self.simulation.spray_force = new_cfg.spray_force;
+        self.simulation.ejection_force = new_cfg.ejection_force;
+        self.simulation.window_wake = new_cfg.window_wake;
+        self.simulation.motion_blur = new_cfg.motion_blur;
+        self.simulation.grain_speed = new_cfg.grain_speed;
+        self.simulation.grain_gravity = new_cfg.grain_gravity;
+        self.simulation.no_fullscreen_snow = new_cfg.no_fullscreen_snow;
+        self.simulation.configure_weather(new_cfg.dynamic_weather, &new_cfg.weather_mode, new_cfg.weather_cycle_speed);
+        self.tracker.update_config(TrackerConfig {
+            top_margin: new_cfg.top_margin,
+            track_layers: new_cfg.track_layers,
+        });
+        self.config = new_cfg;
+    }
+
     pub fn render_frame(&mut self) {
         self.frame_count += 1;
         if self.frame_count == 1 || self.frame_count.is_multiple_of(60) {
@@ -490,46 +523,12 @@ impl SnowhushApp {
         let dt = (now - self.last_frame).as_secs_f32().min(0.05);
         self.last_frame = now;
 
-        if self.frame_count.is_multiple_of(30) {
-            if let Some((new_cfg, mtime)) = load_config_file() {
-                if Some(mtime) != self.last_config_mtime {
-                    self.last_config_mtime = Some(mtime);
-                    if new_cfg.snowfall != self.config.snowfall {
-                        self.simulation.set_snowfall(new_cfg.snowfall);
-                    }
-                    if (new_cfg.density - self.config.density).abs() > 0.001 {
-                        self.simulation.set_density(new_cfg.density);
-                    }
-                    self.simulation.speed_factor = new_cfg.speed_factor;
-                    self.simulation.sway_factor = new_cfg.sway_factor;
-                    self.simulation.thaws = new_cfg.melt;
-                    self.simulation.thaw_rate_multiplier = new_cfg.melt_rate;
-                    self.simulation.wind_accel = new_cfg.wind_accel;
-                    self.simulation.wind_factor = new_cfg.wind_factor;
-                    self.simulation.static_wind = new_cfg.static_wind;
-                    self.simulation.window_leak = new_cfg.window_leak;
-                    self.simulation.motion_shed = new_cfg.motion_shed;
-                    self.simulation.cursor_force = new_cfg.cursor_force;
-                    self.simulation.cloud_density = new_cfg.cloud_density;
-                    self.simulation.cloud_amount = new_cfg.cloud_amount;
-                    self.simulation.cloud_size = new_cfg.cloud_size;
-                    self.simulation.spray_density = new_cfg.spray_density;
-                    self.simulation.spray_amount = new_cfg.spray_amount;
-                    self.simulation.spray_size = new_cfg.spray_size;
-                    self.simulation.spray_force = new_cfg.spray_force;
-                    self.simulation.window_wake = new_cfg.window_wake;
-                    self.simulation.motion_blur = new_cfg.motion_blur;
-                    self.simulation.grain_speed = new_cfg.grain_speed;
-                    self.simulation.grain_gravity = new_cfg.grain_gravity;
-                    self.simulation.no_fullscreen_snow = new_cfg.no_fullscreen_snow;
-                    self.simulation.configure_weather(new_cfg.dynamic_weather, &new_cfg.weather_mode, new_cfg.weather_cycle_speed);
-                    self.tracker.update_config(TrackerConfig {
-                        top_margin: new_cfg.top_margin,
-                        track_layers: new_cfg.track_layers,
-                    });
-                    self.config = new_cfg;
-                }
-            }
+        if self.frame_count.is_multiple_of(30)
+            && let Some((new_cfg, mtime)) = load_config_file()
+            && Some(mtime) != self.last_config_mtime
+        {
+            self.last_config_mtime = Some(mtime);
+            self.apply_config(new_cfg);
         }
 
         let w = self.width as f32;
@@ -551,11 +550,7 @@ impl SnowhushApp {
             self.simulation.burst_window_omnidirectional(id);
         }
 
-        if self.config.no_fullscreen_snow && tracked.has_fullscreen {
-            self.simulation.accumulates = false;
-        } else {
-            self.simulation.accumulates = true;
-        }
+        self.simulation.accumulates = !(self.config.no_fullscreen_snow && tracked.has_fullscreen);
 
         let parked = HashSet::new();
         let mut elsewhere = HashSet::new();

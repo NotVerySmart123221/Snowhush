@@ -68,7 +68,7 @@ fn version_info(version: &str, description: &str, filename: &str) -> Vec<u8> {
     let (high, low) = (parts[0] << 16 | parts[1], parts[2] << 16 | parts[3]);
     let mut fixed = Vec::new();
     for value in [0xFEEF04BD, 0x0001_0000, high, low, high, low, 0x3F, 0, 0x0004_0004, 1, 0, 0, 0] {
-        fixed.extend((value as u32).to_le_bytes());
+        fixed.extend(value.to_le_bytes());
     }
     let strings = [
         ("CompanyName", "Mykhailo Bezruchko"),
@@ -149,7 +149,7 @@ fn wide(text: &str) -> Vec<u8> {
 }
 
 fn pad(bytes: &mut Vec<u8>) {
-    while bytes.len() % 4 != 0 {
+    while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
     }
 }

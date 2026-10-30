@@ -288,6 +288,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--max-snow" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<usize>() {
+                        config.max_snow = val.clamp(10, 50000);
+                    }
+                    i += 1;
+                }
+            }
+            "--max-effects" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<usize>() {
+                        config.max_effects = val.clamp(50, 100000);
+                    }
+                    i += 1;
+                }
+            }
             "--dynamic-weather" => {
                 config.dynamic_weather = true;
             }
@@ -337,6 +353,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --cloud-random <FLOAT> Cloud mote trajectory, speed and gravity randomness [default: 1.0]");
                 println!("      --cloud-accel <FLOAT> Cloud mote acceleration and kinetic speed multiplier [default: 1.0]");
                 println!("      --cloud-fade-rate <FLOAT> Cloud mote decay and dissipation speed multiplier [default: 1.0]");
+                println!("      --max-snow <INT>      Maximum active airborne snowflakes limit [default: 2500]");
+                println!("      --max-effects <INT>   Maximum active particle and cloud effects limit [default: 5000]");
                 println!("      --dynamic-weather     Enable dynamic weather cycles (wind, speed, density)");
                 println!("      --weather-mode <MODE> Weather mode: auto, calm, breeze, blizzard, squall, thaw [default: auto]");
                 println!("      --weather-speed <FLOAT> Dynamic weather cycle speed multiplier [default: 1.0]");

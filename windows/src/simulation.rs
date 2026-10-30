@@ -26,7 +26,6 @@ const CURSOR_RADIUS: f32 = 10.0;
 const CURSOR_OFFSET: V2 = V2::new(4.0, -8.0);
 const GRAVITY: f32 = 2500.0;
 const GRAIN_DRAG: f32 = 0.8;
-const MAX_GRAINS: usize = 12000;
 const PHASE_WRAP: f32 = 20.0 * PI;
 const LEDGE_INSET: f32 = 0.0;
 const GRIP: f32 = 3.0;
@@ -37,7 +36,6 @@ const ADHESION: f32 = 3500.0;
 const SHAKING: f32 = 4.0;
 const JUMP_SPEED: f32 = 6000.0;
 const TRACK_TIME: f32 = 0.06;
-const MAX_MOTES: usize = 1500;
 const GUST_SWEEP: f32 = 0.6;
 const GUST_LENGTH: f32 = 2.2;
 const GUST_WIND: f32 = 1000.0;
@@ -271,6 +269,9 @@ struct Air {
     pub cloud_random: f32,
     pub cloud_accel: f32,
     pub cloud_fade_rate: f32,
+    pub max_grains: usize,
+    pub max_motes: usize,
+    pub max_effects: usize,
     cursor: Option<V2>,
     cursor_velocity: V2,
     held_layers: Vec<usize>,
@@ -322,6 +323,8 @@ pub struct SnowSimulation {
     pub cloud_random: f32,
     pub cloud_accel: f32,
     pub cloud_fade_rate: f32,
+    pub max_snow: usize,
+    pub max_effects: usize,
     pub motion_blur: f32,
     pub accumulates: bool,
     pub no_fullscreen_snow: bool,
@@ -390,6 +393,8 @@ impl SnowSimulation {
             cloud_random: 1.0,
             cloud_accel: 1.0,
             cloud_fade_rate: 1.0,
+            max_snow: 2500,
+            max_effects: 5000,
             motion_blur: 1.0,
             accumulates: true,
             no_fullscreen_snow: false,
@@ -441,6 +446,9 @@ impl SnowSimulation {
                 cloud_random: 1.0,
                 cloud_accel: 1.0,
                 cloud_fade_rate: 1.0,
+                max_grains: 4250,
+                max_motes: 750,
+                max_effects: 5000,
                 cursor: None,
                 cursor_velocity: V2::ZERO,
                 held_layers: Vec::new(),
@@ -610,6 +618,15 @@ impl SnowSimulation {
         self.air.cloud_random = self.cloud_random;
         self.air.cloud_accel = self.cloud_accel;
         self.air.cloud_fade_rate = self.cloud_fade_rate;
+        self.air.max_effects = self.max_effects;
+        self.air.max_grains = (self.max_effects * 85 / 100).max(100);
+        self.air.max_motes = (self.max_effects * 15 / 100).max(50);
+        if self.air.grains.len() > self.air.max_grains {
+            self.air.grains.truncate(self.air.max_grains);
+        }
+        if self.air.motes.len() > self.air.max_motes {
+            self.air.motes.truncate(self.air.max_motes);
+        }
     }
 
     /// Returns whether anything visible changed.
@@ -1535,7 +1552,7 @@ impl SnowSimulation {
 
                         // Ejection / kickback probability scaled by loss and ejection force
                         let lift_prob = (loss * 14.0 * ejection * spray_amount).min(0.75);
-                        if self.air.random.next() < lift_prob && self.air.grains.len() < MAX_GRAINS {
+                        if self.air.random.next() < lift_prob && self.air.grains.len() < self.air.max_grains {
                             let (pos, vel, sz) = {
                                 let r = &mut self.air.random;
                                 let vx = wind_dir * r.range(320.0, 950.0) * ejection + r.range(-20.0, 20.0);
@@ -1549,7 +1566,7 @@ impl SnowSimulation {
                         }
 
                         let mote_prob = (loss * 7.0 * ejection * cloud_amount).min(0.45);
-                        if self.air.random.next() < mote_prob && self.air.motes.len() < MAX_MOTES {
+                        if self.air.random.next() < mote_prob && self.air.motes.len() < self.air.max_motes {
                             let (pos, vel, sz, al, life) = {
                                 let r = &mut self.air.random;
                                 let vx = wind_dir * r.range(150.0, 480.0) * ejection + r.range(-15.0, 15.0);
@@ -1603,7 +1620,7 @@ impl SnowSimulation {
                 // Blast outward physical grains & clods
                 let grains_to_spawn = ((h / 1.8).clamp(1.0, 6.0) * spray_amount) as usize;
                 for _ in 0..grains_to_spawn {
-                    if self.air.grains.len() >= MAX_GRAINS {
+                    if self.air.grains.len() >= self.air.max_grains {
                         break;
                     }
                     let (pos, vel, sz, lump) = {
@@ -1621,7 +1638,7 @@ impl SnowSimulation {
                 }
 
                 // Blast outward billowing cloud motes
-                if self.air.random.next() < (0.45 * cloud_amount).min(0.95) && self.air.motes.len() < MAX_MOTES {
+                if self.air.random.next() < (0.45 * cloud_amount).min(0.95) && self.air.motes.len() < self.air.max_motes {
                     let (pos, vel, sz, al, life) = {
                         let r = &mut self.air.random;
                         let speed = r.range(160.0, 520.0) * ejection;
@@ -1762,7 +1779,8 @@ impl SnowSimulation {
     fn update_target(&mut self) {
         let per_megapoint = if self.snowfall_held { 0.0 } else { self.snowfall.flakes_per_megapoint() };
         let sim_width = self.width + 2.0 * SIDE_MARGIN;
-        self.target_flakes = (per_megapoint * self.air.strength * self.density * sim_width * self.height / 1_000_000.0) as usize;
+        let computed = (per_megapoint * self.air.strength * self.density * sim_width * self.height / 1_000_000.0) as usize;
+        self.target_flakes = computed.min(self.max_snow);
     }
 }
 
@@ -2123,7 +2141,7 @@ impl Air {
                 let lump_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
                 self.throw_lump(area * cohesion, V2::new(mid_x, lump_y), lump_vel);
             }
-            if self.motes.len() < MAX_MOTES && self.random.next() < 0.5 {
+            if self.motes.len() < self.max_motes && self.random.next() < 0.5 {
                 let left = ledge.center_x(start);
                 let right = ledge.center_x(end - 1);
                 let mote_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
@@ -2157,7 +2175,7 @@ impl Air {
         let pieces = (area / 90.0) as usize + 1;
         let share = area / pieces as f32;
         for _ in 0..pieces {
-            if self.grains.len() >= MAX_GRAINS {
+            if self.grains.len() >= self.max_grains {
                 break;
             }
             let (pos, vel, sz, lump) = {
@@ -2197,7 +2215,7 @@ impl Air {
         let velocity = V2::new(lump.velocity.x * 0.3, impact * self.random.range(0.08, 0.16));
         self.release(crumbs, V2::new(lump.position.x, surface + 1.0), velocity, V2::new(lump.size * 0.4, 1.0), 0.6);
 
-        let count = MAX_MOTES.saturating_sub(self.motes.len()).min((2.0 + lump.size * 0.6 * force) as usize);
+        let count = self.max_motes.saturating_sub(self.motes.len()).min((2.0 + lump.size * 0.6 * force) as usize);
         for _ in 0..count {
             let (pos, vel, sz, al, life) = {
                 let r = &mut self.random;
@@ -2220,7 +2238,7 @@ impl Air {
         if area <= 0.02 {
             return;
         }
-        let room = MAX_GRAINS.saturating_sub(self.grains.len());
+        let room = self.max_grains.saturating_sub(self.grains.len());
         if room == 0 {
             self.overflow.push((area, position.x));
             return;
@@ -2324,7 +2342,7 @@ impl Air {
     }
 
     fn emit(&mut self, area: f32, origin: V2, center: V2, velocity: V2) -> f32 {
-        if area <= 0.6 || self.grains.len() >= MAX_GRAINS {
+        if area <= 0.6 || self.grains.len() >= self.max_grains {
             return 0.0;
         }
         let count = ((area / 1.6) as usize + 1).min(4);
@@ -2349,7 +2367,7 @@ impl Air {
         }
 
         // Add cloud motes (эффект облачков) for the cursor
-        if self.cloud_amount > 0.001 && (self.random.next() < 0.55 * self.cloud_amount || speed > 120.0) && self.motes.len() < MAX_MOTES {
+        if self.cloud_amount > 0.001 && (self.random.next() < 0.55 * self.cloud_amount || speed > 120.0) && self.motes.len() < self.max_motes {
             let (pos, mote_v, sz, al, life) = {
                 let r = &mut self.random;
                 let mote_v = velocity * r.range(0.3, 0.7)
@@ -2378,7 +2396,7 @@ impl Air {
         let share = area / grains_to_spawn as f32;
 
         for _ in 0..grains_to_spawn {
-            if self.grains.len() >= MAX_GRAINS {
+            if self.grains.len() >= self.max_grains {
                 break;
             }
             let (pos, vel, sz) = {
@@ -2396,7 +2414,7 @@ impl Air {
         // Billowing cloud motes (эффект облачков)
         let motes_to_spawn = ((area / 1.5).ceil() as usize).clamp(1, 4);
         for _ in 0..motes_to_spawn {
-            if self.motes.len() >= MAX_MOTES {
+            if self.motes.len() >= self.max_motes {
                 break;
             }
             let (pos, vel, sz, al, life) = {
@@ -2439,7 +2457,7 @@ impl Air {
         let horiz_speed = velocity.x.abs();
         let is_crushing = downward_speed > horiz_speed * 0.6 || downward_speed > 25.0;
 
-        let room = MAX_GRAINS.saturating_sub(self.grains.len());
+        let room = self.max_grains.saturating_sub(self.grains.len());
         if room == 0 {
             self.overflow.push((area, col_x));
             return;
@@ -2492,7 +2510,7 @@ impl Air {
         if self.cloud_amount > 0.001 {
             let r = &mut self.random;
             let mote_chance = ((area / 2.5).clamp(0.2, 0.7) * self.cloud_amount).clamp(0.05, 1.0);
-            if r.next() < mote_chance && self.motes.len() < MAX_MOTES {
+            if r.next() < mote_chance && self.motes.len() < self.max_motes {
                 let mote_vx = if is_crushing {
                     side_dir * (r.range(60.0, 180.0) + downward_speed * 0.3) + velocity.x * 0.2 + r.range(-20.0, 20.0)
                 } else {
@@ -2514,7 +2532,7 @@ impl Air {
                 self.motes.push(mote1);
 
                 // Bright dense core puff if displacement is prominent
-                if (area > 1.2 || self.cloud_amount > 1.4) && self.motes.len() < MAX_MOTES {
+                if (area > 1.2 || self.cloud_amount > 1.4) && self.motes.len() < self.max_motes {
                     let (pos2, vel2, sz2, al2, life2) = {
                         let r2 = &mut self.random;
                         (
@@ -2719,7 +2737,7 @@ impl Air {
 
     /// A pinch of snow torn off by the gust: a grain of powder, now and then with a faint puff around it.
     fn lift(&mut self, position: V2, direction: f32) {
-        if self.grains.len() >= MAX_GRAINS {
+        if self.grains.len() >= self.max_grains {
             return;
         }
         let ejection = self.ejection_force;
@@ -2733,7 +2751,7 @@ impl Air {
         let grain = self.make_grain(pos, vel, 0.0, sz, 0.0, true);
         self.grains.push(grain);
 
-        if self.random.next() < 0.35 && self.motes.len() < MAX_MOTES {
+        if self.random.next() < 0.35 && self.motes.len() < self.max_motes {
             let (pos, vel, sz, al, life) = {
                 let r = &mut self.random;
                 let vel = V2::new(direction * r.range(200.0, 600.0) * ejection, r.range(20.0, 120.0) * ejection);

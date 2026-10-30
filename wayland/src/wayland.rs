@@ -68,6 +68,8 @@ pub struct AppConfig {
     pub cloud_random: f32,
     pub cloud_accel: f32,
     pub cloud_fade_rate: f32,
+    pub max_snow: usize,
+    pub max_effects: usize,
     pub dynamic_weather: bool,
     pub weather_mode: String,
     pub weather_cycle_speed: f32,
@@ -112,6 +114,8 @@ impl Default for AppConfig {
             cloud_random: 1.0,
             cloud_accel: 1.0,
             cloud_fade_rate: 1.0,
+            max_snow: 2500,
+            max_effects: 5000,
             dynamic_weather: false,
             weather_mode: "auto".to_string(),
             weather_cycle_speed: 1.0,
@@ -187,6 +191,10 @@ pub struct JsonConfig {
     pub cloud_accel: f32,
     #[serde(default = "default_one")]
     pub cloud_fade_rate: f32,
+    #[serde(default = "default_max_snow")]
+    pub max_snow: usize,
+    #[serde(default = "default_max_effects")]
+    pub max_effects: usize,
     #[serde(default = "default_false")]
     pub dynamic_weather: bool,
     #[serde(default = "default_weather_mode")]
@@ -225,6 +233,14 @@ fn default_window_leak() -> f32 {
 
 fn default_shed_threshold() -> f32 {
     250.0
+}
+
+fn default_max_snow() -> usize {
+    2500
+}
+
+fn default_max_effects() -> usize {
+    5000
 }
 
 impl JsonConfig {
@@ -272,6 +288,8 @@ impl JsonConfig {
             cloud_random: cfg.cloud_random,
             cloud_accel: cfg.cloud_accel,
             cloud_fade_rate: cfg.cloud_fade_rate,
+            max_snow: cfg.max_snow,
+            max_effects: cfg.max_effects,
             dynamic_weather: cfg.dynamic_weather,
             weather_mode: cfg.weather_mode.clone(),
             weather_cycle_speed: cfg.weather_cycle_speed,
@@ -324,6 +342,8 @@ impl JsonConfig {
             cloud_random: self.cloud_random.clamp(0.0, 5.0),
             cloud_accel: self.cloud_accel.clamp(0.05, 5.0),
             cloud_fade_rate: self.cloud_fade_rate.clamp(0.1, 5.0),
+            max_snow: self.max_snow.clamp(10, 50000),
+            max_effects: self.max_effects.clamp(50, 100000),
             dynamic_weather: self.dynamic_weather,
             weather_mode: self.weather_mode.clone(),
             weather_cycle_speed: self.weather_cycle_speed.clamp(0.1, 5.0),
@@ -544,6 +564,8 @@ impl SnowhushApp {
         self.simulation.cloud_random = new_cfg.cloud_random;
         self.simulation.cloud_accel = new_cfg.cloud_accel;
         self.simulation.cloud_fade_rate = new_cfg.cloud_fade_rate;
+        self.simulation.max_snow = new_cfg.max_snow;
+        self.simulation.max_effects = new_cfg.max_effects;
         self.simulation.no_fullscreen_snow = new_cfg.no_fullscreen_snow;
         self.simulation.configure_weather(new_cfg.dynamic_weather, &new_cfg.weather_mode, new_cfg.weather_cycle_speed);
         self.tracker.update_config(TrackerConfig {

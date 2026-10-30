@@ -1208,3 +1208,39 @@ fn test_dock_upward_movement_launches_grains_up_and_spreads() {
     }).count();
     assert!(sideways_grains > 0, "grains must spread sideways when launched by rising dock: {sideways_grains}");
 }
+
+#[test]
+fn test_workspace_sweep_slider_controls_effect_strength() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    let win = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 400.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win, 0.2, &none, &none, false);
+    run(&mut sim, 15.0, AWAY);
+    assert!(sim.has_snow());
+
+    // When workspace_sweep is 0.0, sweep is disabled entirely
+    sim.workspace_sweep = 0.0;
+    sim.sweep_window_ledges(1.0, 1.0, &none);
+    assert_eq!(sim.workspace_transition_until, -10.0, "zero workspace_sweep must not trigger transition");
+    assert!(sim.has_snow(), "snow should remain untouched when workspace_sweep is 0.0");
+
+    // When workspace_sweep is enabled, snow is swept with moderate speed and non-blown grains
+    sim.workspace_sweep = 0.5;
+    sim.sweep_window_ledges(1.0, 1.0, &none);
+    assert!(sim.workspace_transition_until > 0.0, "workspace transition must be triggered");
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    // Grains must exist and their velocities should be moderate (< 500 px/s)
+    let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05).collect();
+    assert!(!grains.is_empty(), "grains should be spawned from swept snow");
+    for g in grains {
+        assert!(g.velocity.x.abs() < 550.0, "grain velocity must be controlled and not excessive: {}", g.velocity.x);
+    }
+}

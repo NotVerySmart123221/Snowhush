@@ -274,6 +274,7 @@ pub struct SnowSimulation {
     pub thaw_rate_multiplier: f32,
     pub wind_accel: bool,
     pub wind_factor: f32,
+    pub workspace_sweep: f32,
     pub static_wind: f32,
     pub window_leak: f32,
     pub window_wake: f32,
@@ -336,6 +337,7 @@ impl SnowSimulation {
             thaw_rate_multiplier: 1.0,
             wind_accel: true,
             wind_factor: 1.0,
+            workspace_sweep: 1.0,
             static_wind: 20.0,
             window_leak: 0.35,
             window_wake: 1.0,
@@ -1294,13 +1296,16 @@ impl SnowSimulation {
     /// On window ledges: 100% of snow flies away into particles and clouds (drifts do not remain).
     /// On the ground: snowdrifts are partially swept (~12-28%), shedding loose powder.
     pub fn sweep_window_ledges(&mut self, direction: f32, distance: f32, static_ids: &HashSet<WindowId>) {
+        if self.workspace_sweep <= 0.001 {
+            return;
+        }
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
-        let duration = (0.8 + 0.4 * distance.max(1.0)).min(2.5) as f64;
+        let duration = ((0.35 + 0.15 * distance.clamp(1.0, 3.0)) * self.workspace_sweep.clamp(0.3, 1.8)).clamp(0.25, 1.2) as f64;
         self.workspace_transition_until = self.air.clock + duration;
         self.air.workspace_wind_start = self.air.clock;
         self.air.workspace_wind_until = self.air.clock + duration;
         self.air.workspace_wind_dir = dir;
-        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.wind_factor.max(0.5);
+        let sweep_speed = (200.0 + 70.0 * distance.clamp(1.0, 3.0)) * self.workspace_sweep * self.wind_factor.max(0.2);
         self.air.workspace_wind = sweep_speed;
 
         // On window ledges: 100% of snow flies away ("весь снег улетает сугробы не остаются"),
@@ -1335,8 +1340,8 @@ impl SnowSimulation {
         }
 
         // On the ground: snowdrifts are partially swept ("сугробы могут немного сметаться")
-        // shedding loose top snow (12-28%) into flying grains and cloud motes
-        let ground_sweep_fraction = (0.18 + 0.05 * (distance - 1.0).max(0.0)).clamp(0.12, 0.28) * self.wind_factor.clamp(0.2, 2.0);
+        // shedding loose top snow into flying grains and cloud motes
+        let ground_sweep_fraction = (0.08 + 0.04 * (distance - 1.0).max(0.0)).clamp(0.05, 0.20) * self.workspace_sweep * self.wind_factor.clamp(0.2, 1.5);
         let ground = &mut self.layers[0];
         let mut ground_dust = 0.0;
         for i in 0..ground.count() {
@@ -1357,12 +1362,12 @@ impl SnowSimulation {
         }
 
         if self.wind_accel {
-            let dist_multiplier = (0.2 + 0.4 * distance.max(1.0)).min(4.5);
-            let power = dist_multiplier * self.wind_factor.max(0.0);
+            let dist_multiplier = (0.2 + 0.25 * distance.max(1.0)).min(2.5);
+            let power = dist_multiplier * self.workspace_sweep * self.wind_factor.max(0.0);
             for flake in &mut self.air.flakes {
                 let random = &mut self.air.random;
-                flake.velocity.x += dir * random.range(300.0, 700.0) * power;
-                flake.velocity.y += random.range(20.0, 80.0) * power;
+                flake.velocity.x += dir * random.range(80.0, 220.0) * power;
+                flake.velocity.y += random.range(10.0, 35.0) * power;
             }
         }
         self.air.heights_changed = true;
@@ -1370,11 +1375,14 @@ impl SnowSimulation {
 
     /// Sweeps snow off window ledges AND the ground.
     pub fn sweep_all(&mut self, direction: f32, distance: f32, static_ids: &HashSet<WindowId>) {
+        if self.workspace_sweep <= 0.001 {
+            return;
+        }
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.sweep_window_ledges(dir, distance, static_ids);
-        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.wind_factor.max(0.5);
+        let sweep_speed = (200.0 + 70.0 * distance.clamp(1.0, 3.0)) * self.workspace_sweep * self.wind_factor.max(0.2);
         // sweep_all applies an additional sweep on ground for more aggressive clearing if requested
-        let sweep_fraction = (0.35 + 0.10 * (distance - 1.0).max(0.0)).clamp(0.25, 0.60) * self.wind_factor.clamp(0.2, 2.0);
+        let sweep_fraction = (0.15 + 0.08 * (distance - 1.0).max(0.0)).clamp(0.10, 0.35) * self.workspace_sweep * self.wind_factor.clamp(0.2, 1.5);
         let ground = &mut self.layers[0];
         let mut dust = 0.0;
         for i in 0..ground.count() {
@@ -2302,15 +2310,15 @@ impl Air {
                 break;
             }
             let r = &mut self.random;
-            let vx = dir * r.range(speed * 0.7, speed * 1.5) + r.range(-30.0, 30.0);
-            let vy = r.range(40.0, 280.0) + speed * 0.1 * r.range(0.0, 1.0);
+            let vx = dir * r.range(speed * 0.5, speed * 1.1) + r.range(-20.0, 20.0);
+            let vy = r.range(40.0, 180.0) + speed * 0.08 * r.range(0.0, 1.0);
             self.grains.push(Grain {
                 position: origin + V2::new(r.range(-2.0, 2.0), r.range(-2.0, 3.0)),
                 velocity: V2::new(vx, vy),
                 area: share,
                 size: (share.sqrt() * 1.1).clamp(1.2, 3.8),
                 lump: 0.0,
-                blown: true,
+                blown: false,
             });
         }
 
@@ -2318,15 +2326,15 @@ impl Air {
         let r = &mut self.random;
         let mote_chance = (area / 3.0).clamp(0.35, 0.95);
         if r.next() < mote_chance && self.motes.len() < MAX_MOTES {
-            let mote_vx = dir * r.range(speed * 0.4, speed * 0.9) + r.range(-20.0, 20.0);
-            let mote_vy = r.range(40.0, 160.0);
+            let mote_vx = dir * r.range(speed * 0.35, speed * 0.75) + r.range(-15.0, 15.0);
+            let mote_vy = r.range(30.0, 120.0);
             self.motes.push(Mote {
                 position: origin + V2::new(r.range(-4.0, 4.0), r.range(0.0, 6.0)),
                 velocity: V2::new(mote_vx, mote_vy),
-                size: r.range(18.0, 38.0),
-                alpha: r.range(0.20, 0.40),
+                size: r.range(14.0, 28.0),
+                alpha: r.range(0.12, 0.28),
                 age: 0.0,
-                life: r.range(0.7, 1.5),
+                life: r.range(0.5, 1.1),
             });
         }
     }

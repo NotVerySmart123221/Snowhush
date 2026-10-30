@@ -43,6 +43,7 @@ pub struct AppConfig {
     pub melt_rate: f32,
     pub wind_accel: bool,
     pub wind_factor: f32,
+    pub workspace_sweep: f32,
     pub wind_erosion_threshold: f32,
     pub wind_erosion_rate: f32,
     pub static_wind: f32,
@@ -81,6 +82,7 @@ impl Default for AppConfig {
             melt_rate: 1.0,
             wind_accel: true,
             wind_factor: 1.0,
+            workspace_sweep: 1.0,
             wind_erosion_threshold: 35.0,
             wind_erosion_rate: 1.0,
             static_wind: 20.0,
@@ -125,6 +127,8 @@ pub struct JsonConfig {
     pub wind_accel: bool,
     #[serde(default = "default_one")]
     pub wind_factor: f32,
+    #[serde(default = "default_one")]
+    pub workspace_sweep: f32,
     #[serde(default = "default_wind_erosion_threshold")]
     pub wind_erosion_threshold: f32,
     #[serde(default = "default_one")]
@@ -219,6 +223,7 @@ impl JsonConfig {
             melt_rate: cfg.melt_rate,
             wind_accel: cfg.wind_accel,
             wind_factor: cfg.wind_factor,
+            workspace_sweep: cfg.workspace_sweep,
             wind_erosion_threshold: cfg.wind_erosion_threshold,
             wind_erosion_rate: cfg.wind_erosion_rate,
             static_wind: cfg.static_wind,
@@ -265,6 +270,7 @@ impl JsonConfig {
             melt_rate: self.melt_rate,
             wind_accel: self.wind_accel,
             wind_factor: self.wind_factor,
+            workspace_sweep: self.workspace_sweep.clamp(0.0, 5.0),
             wind_erosion_threshold: self.wind_erosion_threshold.clamp(0.0, 300.0),
             wind_erosion_rate: self.wind_erosion_rate.clamp(0.0, 10.0),
             static_wind: self.static_wind,
@@ -480,6 +486,7 @@ impl SnowhushApp {
         self.simulation.thaw_rate_multiplier = new_cfg.melt_rate;
         self.simulation.wind_accel = new_cfg.wind_accel;
         self.simulation.wind_factor = new_cfg.wind_factor;
+        self.simulation.workspace_sweep = new_cfg.workspace_sweep;
         self.simulation.wind_erosion_threshold = new_cfg.wind_erosion_threshold;
         self.simulation.wind_erosion_rate = new_cfg.wind_erosion_rate;
         self.simulation.static_wind = new_cfg.static_wind;

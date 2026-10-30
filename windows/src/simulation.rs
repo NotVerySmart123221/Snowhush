@@ -1189,11 +1189,16 @@ impl SnowSimulation {
             let mut grain = self.air.grains[i];
             let previous_y = grain.position.y;
             if grain.blown {
-                // Light powder: the wind keeps it moving toward the edge it was blown to, and it barely sinks.
-                let base_speed = GUST_WIND * 1.6 * self.workspace_sweep.clamp(0.2, 3.0);
-                let speed = if grain.velocity.x < 0.0 { -base_speed } else { base_speed };
-                grain.velocity.x += (speed - grain.velocity.x) * (dt * 2.0).min(1.0);
-                grain.velocity.y -= GRAVITY * 0.08 * gravity_scale * dt;
+                // Powder carried by wind during workspace switch or gust:
+                // Rather than rocketing away infinitely off-screen, it rides the wind wave,
+                // and naturally decelerates and settles back under gravity.
+                let wind = self.air.wind_speed();
+                let target_speed = wind * (0.8 + 0.2 * self.workspace_sweep.min(2.0));
+                grain.velocity.x += (target_speed - grain.velocity.x) * (dt * 2.5).min(1.0);
+                grain.velocity.y -= GRAVITY * 0.28 * gravity_scale * dt;
+                if grain.velocity.x.abs() < 80.0 && self.air.clock >= self.workspace_transition_until {
+                    grain.blown = false;
+                }
             } else {
                 grain.velocity.y -= GRAVITY * gravity_scale * dt;
                 grain.velocity *= damping;
@@ -1308,16 +1313,18 @@ impl SnowSimulation {
             return;
         }
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
-        let duration = (0.8 + 0.4 * distance.max(1.0)).min(2.5) as f64;
+        let dist = distance.max(1.0);
+        let dist_clamped = dist.clamp(1.0, 5.0);
+        let duration = ((0.6 + 0.3 * (dist_clamped - 1.0)) * self.workspace_sweep.clamp(0.3, 2.0)).clamp(0.4, 2.2) as f64;
         self.workspace_transition_until = self.air.clock + duration;
         self.air.workspace_wind_start = self.air.clock;
         self.air.workspace_wind_until = self.air.clock + duration;
         self.air.workspace_wind_dir = dir;
-        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.workspace_sweep * self.wind_factor.max(0.5);
+        let sweep_speed = (320.0 + 120.0 * (dist_clamped - 1.0)) * self.workspace_sweep * self.wind_factor.max(0.3);
         self.air.workspace_wind = sweep_speed;
 
-        // On window ledges: 100% of snow flies away ("весь снег улетает сугробы не остаются"),
-        // swept into flying grains and cloud motes just like a cursor snowplow!
+        // Snow on window ledges is swept proportionally to distance and workspace_sweep (drifts don't all fly away)
+        let ledge_fraction = ((0.32 + 0.16 * (dist_clamped - 1.0)) * self.workspace_sweep).clamp(0.10, 0.95);
         for li in 1..self.layers.len() {
             let id = self.ids[li];
             if static_ids.contains(&id) {
@@ -1330,15 +1337,16 @@ impl SnowSimulation {
                 if h <= 0.05 {
                     continue;
                 }
+                let loss = (h * ledge_fraction).min(h);
                 let x = layer.center_x(i);
                 let surface = layer.surface(i);
-                let area = h * layer.column_width;
+                let area = loss * layer.column_width;
                 dust += area;
                 while dust >= 3.0 {
                     self.air.plow_sweep_snow(3.0, V2::new(x, surface), dir, sweep_speed);
                     dust -= 3.0;
                 }
-                layer.set(i, 0.0);
+                layer.set(i, h - loss);
             }
             if dust > 0.5 {
                 let x = layer.base().x + layer.width() * 0.5;
@@ -1347,9 +1355,8 @@ impl SnowSimulation {
             }
         }
 
-        // On the ground: snowdrifts are partially swept ("сугробы могут немного сметаться")
-        // shedding loose top snow (12-28%) into flying grains and cloud motes
-        let ground_sweep_fraction = (0.18 + 0.05 * (distance - 1.0).max(0.0)).clamp(0.12, 0.28) * self.workspace_sweep * self.wind_factor.clamp(0.2, 2.0);
+        // On the ground: snowdrifts are partially swept, scaling with distance and workspace_sweep
+        let ground_sweep_fraction = ((0.10 + 0.05 * (dist_clamped - 1.0)) * self.workspace_sweep * self.wind_factor.clamp(0.2, 1.5)).clamp(0.04, 0.45);
         let ground = &mut self.layers[0];
         let mut ground_dust = 0.0;
         for i in 0..ground.count() {
@@ -1388,8 +1395,10 @@ impl SnowSimulation {
         }
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.sweep_window_ledges(dir, distance, static_ids);
-        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.workspace_sweep * self.wind_factor.max(0.5);
-        let sweep_fraction = (0.35 + 0.10 * (distance - 1.0).max(0.0)).clamp(0.25, 0.60) * self.workspace_sweep * self.wind_factor.clamp(0.2, 2.0);
+        let dist = distance.max(1.0);
+        let dist_clamped = dist.clamp(1.0, 5.0);
+        let sweep_speed = (320.0 + 120.0 * (dist_clamped - 1.0)) * self.workspace_sweep * self.wind_factor.max(0.3);
+        let sweep_fraction = ((0.20 + 0.08 * (dist_clamped - 1.0)) * self.workspace_sweep * self.wind_factor.clamp(0.2, 1.5)).clamp(0.08, 0.70);
         let ground = &mut self.layers[0];
         let mut dust = 0.0;
         for i in 0..ground.count() {

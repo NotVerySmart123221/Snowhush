@@ -696,8 +696,9 @@ fn workspace_switch_partially_sweeps_snowdrifts() {
     let ground_after = all_piles_after[0].1;
     let ledge_after = all_piles_after.iter().find(|(origin, _)| origin.y > 300.0).map_or(0.0, |p| p.1);
 
-    // Window ledges: all snow flies off into clouds and grains (no drifts remain on window!)
-    assert_eq!(ledge_after, 0.0, "window ledge snow should fly away completely upon workspace sweep");
+    // Window ledges: snowdrifts are partially swept (not wiped out to zero)
+    assert!(ledge_after < ledge_before, "ledge snow should decrease after sweep");
+    assert!(ledge_after > 0.0, "window ledge snow should not all fly away completely: got {ledge_after}");
 
     // Ground: snowdrifts are partially swept, retaining most of their accumulation
     assert!(ground_after < ground_before, "ground snow should decrease slightly after sweep");
@@ -705,6 +706,55 @@ fn workspace_switch_partially_sweeps_snowdrifts() {
 
     // Verify grains and cloud motes were spawned into the air
     assert!(sim.sprite_count() > 0, "snow sweep should launch flying grains and cloud motes");
+}
+
+#[test]
+fn test_workspace_sweep_scales_with_distance() {
+    let none = HashSet::new();
+
+    // Setup two identical simulations with accumulated snow
+    let create_sim = || {
+        let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+        sim.thaws = false;
+        sim.static_wind = 0.0;
+        let win = [WindowSurface {
+            id: 1,
+            frame: Rect { x: 300.0, y: 400.0, width: 400.0, height: 200.0 },
+            blockers: Vec::new(),
+            corner_radius: 0.0,
+            corner_exponent: 2.0,
+        }];
+        sim.update_windows(&win, 0.2, &none, &none, false);
+        run(&mut sim, 20.0, AWAY);
+        sim.set_snowfall(Snowfall::Off);
+        run(&mut sim, 5.0, AWAY);
+        sim
+    };
+
+    let mut sim_near = create_sim();
+    let mut sim_far = create_sim();
+
+    let _initial_ledge = piles(&sim_near).iter().find(|(origin, _)| origin.y > 300.0).unwrap().1;
+    let initial_ground = piles(&sim_near)[0].1;
+
+    // Switch 1 workspace distance
+    sim_near.sweep_window_ledges(1.0, 1.0, &none);
+    // Switch 4 workspaces distance
+    sim_far.sweep_window_ledges(1.0, 4.0, &none);
+
+    let ledge_near = piles(&sim_near).iter().find(|(origin, _)| origin.y > 300.0).unwrap().1;
+    let ledge_far = piles(&sim_far).iter().find(|(origin, _)| origin.y > 300.0).unwrap().1;
+
+    let ground_near = piles(&sim_near)[0].1;
+    let ground_far = piles(&sim_far)[0].1;
+
+    // Distance = 4 should sweep away MORE snow than distance = 1
+    assert!(ledge_far < ledge_near, "further workspace jump must sweep more ledge snow: far={ledge_far}, near={ledge_near}");
+    assert!(ground_far < ground_near, "further workspace jump must sweep more ground snow: far={ground_far}, near={ground_near}");
+
+    // Neither should be completely emptied
+    assert!(ledge_far > 0.0, "far jump should still retain some snowdrift: {ledge_far}");
+    assert!(ground_far > initial_ground * 0.4, "ground should not be completely stripped even on far jump: {ground_far}");
 }
 
 #[test]

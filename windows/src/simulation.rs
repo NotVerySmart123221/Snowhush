@@ -1182,17 +1182,11 @@ impl SnowSimulation {
             let mut grain = self.air.grains[i];
             let previous_y = grain.position.y;
             if grain.blown {
-                // Light powder carried by wind: follows ambient wind speed with buoyancy
-                let wind = self.air.wind_speed();
-                let wind_target = if wind.abs() > 15.0 {
-                    wind * (1.1 + 0.15 * (grain.size / 3.0).min(2.0))
-                } else if grain.velocity.x != 0.0 {
-                    grain.velocity.x.signum() * 250.0
-                } else {
-                    0.0
-                };
-                grain.velocity.x += (wind_target - grain.velocity.x) * (dt * 2.5).min(1.0);
-                grain.velocity.y -= GRAVITY * 0.18 * gravity_scale * dt;
+                // Light powder: the wind keeps it moving toward the edge it was blown to, and it barely sinks.
+                let base_speed = GUST_WIND * 1.6 * self.workspace_sweep.clamp(0.2, 3.0);
+                let speed = if grain.velocity.x < 0.0 { -base_speed } else { base_speed };
+                grain.velocity.x += (speed - grain.velocity.x) * (dt * 2.0).min(1.0);
+                grain.velocity.y -= GRAVITY * 0.08 * gravity_scale * dt;
             } else {
                 grain.velocity.y -= GRAVITY * gravity_scale * dt;
                 grain.velocity *= damping;
@@ -1307,13 +1301,12 @@ impl SnowSimulation {
             return;
         }
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
-        let dist = distance.max(1.0);
-        let duration = ((0.55 + 0.25 * (dist - 1.0).clamp(0.0, 3.0)) * self.workspace_sweep.clamp(0.3, 2.0)).clamp(0.35, 1.8) as f64;
+        let duration = (0.8 + 0.4 * distance.max(1.0)).min(2.5) as f64;
         self.workspace_transition_until = self.air.clock + duration;
         self.air.workspace_wind_start = self.air.clock;
         self.air.workspace_wind_until = self.air.clock + duration;
         self.air.workspace_wind_dir = dir;
-        let sweep_speed = (420.0 + 130.0 * (dist - 1.0).clamp(0.0, 4.0)) * self.workspace_sweep * self.wind_factor.max(0.3);
+        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.workspace_sweep * self.wind_factor.max(0.5);
         self.air.workspace_wind = sweep_speed;
 
         // On window ledges: 100% of snow flies away ("весь снег улетает сугробы не остаются"),
@@ -1348,8 +1341,8 @@ impl SnowSimulation {
         }
 
         // On the ground: snowdrifts are partially swept ("сугробы могут немного сметаться")
-        // shedding loose top snow into flying grains and cloud motes
-        let ground_sweep_fraction = (0.12 + 0.04 * (dist - 1.0).max(0.0)).clamp(0.08, 0.28) * self.workspace_sweep * self.wind_factor.clamp(0.2, 1.5);
+        // shedding loose top snow (12-28%) into flying grains and cloud motes
+        let ground_sweep_fraction = (0.18 + 0.05 * (distance - 1.0).max(0.0)).clamp(0.12, 0.28) * self.workspace_sweep * self.wind_factor.clamp(0.2, 2.0);
         let ground = &mut self.layers[0];
         let mut ground_dust = 0.0;
         for i in 0..ground.count() {
@@ -1370,12 +1363,12 @@ impl SnowSimulation {
         }
 
         if self.wind_accel {
-            let dist_multiplier = (0.35 + 0.3 * dist).min(3.5);
-            let power = dist_multiplier * self.workspace_sweep * self.wind_factor.max(0.0);
+            let dist_multiplier = (0.2 + 0.4 * distance.max(1.0)).min(4.5);
+            let power = dist_multiplier * self.wind_factor.max(0.0);
             for flake in &mut self.air.flakes {
                 let random = &mut self.air.random;
-                flake.velocity.x += dir * random.range(160.0, 380.0) * power;
-                flake.velocity.y += random.range(15.0, 50.0) * power;
+                flake.velocity.x += dir * random.range(300.0, 700.0) * power;
+                flake.velocity.y += random.range(20.0, 80.0) * power;
             }
         }
         self.air.heights_changed = true;
@@ -1388,9 +1381,8 @@ impl SnowSimulation {
         }
         let dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.sweep_window_ledges(dir, distance, static_ids);
-        let dist = distance.max(1.0);
-        let sweep_speed = (420.0 + 130.0 * (dist - 1.0).clamp(0.0, 4.0)) * self.workspace_sweep * self.wind_factor.max(0.3);
-        let sweep_fraction = (0.20 + 0.08 * (dist - 1.0).max(0.0)).clamp(0.15, 0.45) * self.workspace_sweep * self.wind_factor.clamp(0.2, 1.5);
+        let sweep_speed = (550.0 + 150.0 * distance.clamp(1.0, 3.0)) * self.workspace_sweep * self.wind_factor.max(0.5);
+        let sweep_fraction = (0.35 + 0.10 * (distance - 1.0).max(0.0)).clamp(0.25, 0.60) * self.workspace_sweep * self.wind_factor.clamp(0.2, 2.0);
         let ground = &mut self.layers[0];
         let mut dust = 0.0;
         for i in 0..ground.count() {
@@ -2534,17 +2526,7 @@ impl Air {
     }
 
     fn wind_speed(&self) -> f32 {
-        if self.clock < self.workspace_wind_until {
-            self.workspace_wind_speed() + self.natural_breeze()
-        } else {
-            self.breeze() + self.gust_speed()
-        }
-    }
-
-    fn natural_breeze(&self) -> f32 {
-        let t = self.clock;
-        let natural = (10.0 * (t * 0.07).sin() + 6.0 * (t * 0.19 + 1.7).sin() + 3.0 * (t * 0.43 + 4.1).sin()) as f32;
-        natural * (0.6 + 0.4 * self.strength)
+        self.breeze() + self.gust_speed() + self.workspace_wind_speed()
     }
 
     fn breeze(&self) -> f32 {

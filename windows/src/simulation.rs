@@ -256,6 +256,8 @@ struct Air {
     pub cloud_density: f32,
     pub cloud_amount: f32,
     pub cloud_size: f32,
+    pub cloud_depth_threshold: f32,
+    pub cloud_depth_scale: f32,
     pub spray_density: f32,
     pub spray_amount: f32,
     pub spray_size: f32,
@@ -310,6 +312,8 @@ pub struct SnowSimulation {
     pub cloud_density: f32,
     pub cloud_amount: f32,
     pub cloud_size: f32,
+    pub cloud_depth_threshold: f32,
+    pub cloud_depth_scale: f32,
     pub spray_density: f32,
     pub spray_amount: f32,
     pub spray_size: f32,
@@ -380,6 +384,8 @@ impl SnowSimulation {
             cloud_density: 1.0,
             cloud_amount: 1.0,
             cloud_size: 1.0,
+            cloud_depth_threshold: 1.0,
+            cloud_depth_scale: 1.0,
             spray_density: 1.0,
             spray_amount: 1.0,
             spray_size: 1.0,
@@ -433,6 +439,8 @@ impl SnowSimulation {
                 cloud_density: 1.0,
                 cloud_amount: 1.0,
                 cloud_size: 1.0,
+                cloud_depth_threshold: 1.0,
+                cloud_depth_scale: 1.0,
                 spray_density: 1.0,
                 spray_amount: 1.0,
                 spray_size: 1.0,
@@ -605,6 +613,8 @@ impl SnowSimulation {
         self.air.cloud_density = self.cloud_density;
         self.air.cloud_amount = self.cloud_amount;
         self.air.cloud_size = self.cloud_size;
+        self.air.cloud_depth_threshold = self.cloud_depth_threshold;
+        self.air.cloud_depth_scale = self.cloud_depth_scale;
         self.air.spray_density = self.spray_density;
         self.air.spray_amount = self.spray_amount;
         self.air.spray_size = self.spray_size;
@@ -2152,9 +2162,13 @@ impl Air {
             }
             let avg_depth = if count_cols > 0 { total_h / count_cols as f32 } else { 0.0 };
             // Cloud smoke amount and puff size strictly scale with snowdrift depth.
-            // Small snowdrifts or edge specks (< 1.0 px) produce NO smoke clouds.
-            if self.cloud_amount > 0.001 && avg_depth >= 1.0 && self.motes.len() < self.max_motes {
-                let depth_factor = ((avg_depth - 1.0) / 7.0).clamp(0.0, 1.0);
+            let depth_thresh = self.cloud_depth_threshold.max(0.0);
+            if self.cloud_amount > 0.001 && avg_depth >= depth_thresh && self.motes.len() < self.max_motes {
+                let depth_factor = if depth_thresh > 0.001 || avg_depth > 0.001 {
+                    (((avg_depth - depth_thresh) / 7.0) * self.cloud_depth_scale).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
                 let speed_boost = if velocity.y > 40.0 || velocity.length() > 100.0 { 1.2 } else { 0.8 };
                 let mote_chance = (depth_factor * 0.70 * speed_boost * self.cloud_amount).clamp(0.0, 0.9);
                 if self.random.next() < mote_chance {
@@ -2385,8 +2399,13 @@ impl Air {
 
         // Add cloud motes (эффект облачков) for the cursor, strictly dependent on snowdrift depth
         let depth = area / COLUMN_WIDTH;
-        if self.cloud_amount > 0.001 && depth >= 1.0 && self.motes.len() < self.max_motes {
-            let depth_factor = ((depth - 1.0) / 6.0).clamp(0.0, 1.0);
+        let depth_thresh = self.cloud_depth_threshold.max(0.0);
+        if self.cloud_amount > 0.001 && depth >= depth_thresh && self.motes.len() < self.max_motes {
+            let depth_factor = if depth_thresh > 0.001 || depth > 0.001 {
+                (((depth - depth_thresh) / 6.0) * self.cloud_depth_scale).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
             let mote_chance = (depth_factor * 0.70 * self.cloud_amount).clamp(0.0, 0.9);
             if self.random.next() < mote_chance {
                 let (pos, mote_v, sz, al, life) = {
@@ -2435,8 +2454,13 @@ impl Air {
 
         // Billowing cloud motes (эффект облачков), strictly scaling with depth
         let depth = area / COLUMN_WIDTH;
-        if depth >= 1.0 && self.cloud_amount > 0.001 {
-            let depth_factor = ((depth - 1.0) / 7.0).clamp(0.0, 1.0);
+        let depth_thresh = self.cloud_depth_threshold.max(0.0);
+        if depth >= depth_thresh && self.cloud_amount > 0.001 {
+            let depth_factor = if depth_thresh > 0.001 || depth > 0.001 {
+                (((depth - depth_thresh) / 7.0) * self.cloud_depth_scale).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
             let motes_to_spawn = ((depth_factor * 3.0 * self.cloud_amount).round() as usize).clamp(1, 4);
             for _ in 0..motes_to_spawn {
                 if self.motes.len() >= self.max_motes {
@@ -2534,11 +2558,16 @@ impl Air {
 
         // Billowing clouds (эффект облачков)
         // Smoke amount and puff size strictly scale with snowdrift depth (area / COLUMN_WIDTH).
-        // Specks and thin edges (< 1.0 px depth) produce NO smoke.
+        // Specks and thin edges (< depth_thresh px depth) produce NO smoke.
         let depth = area / COLUMN_WIDTH;
-        if self.cloud_amount > 0.001 && depth >= 1.0 {
+        let depth_thresh = self.cloud_depth_threshold.max(0.0);
+        if self.cloud_amount > 0.001 && depth >= depth_thresh {
             let r = &mut self.random;
-            let depth_factor = ((depth - 1.0) / 7.0).clamp(0.0, 1.0);
+            let depth_factor = if depth_thresh > 0.001 || depth > 0.001 {
+                (((depth - depth_thresh) / 7.0) * self.cloud_depth_scale).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
             let mote_chance = (depth_factor * 0.80 * self.cloud_amount).clamp(0.0, 0.95);
             if r.next() < mote_chance && self.motes.len() < self.max_motes {
                 let mote_vx = if is_crushing {
@@ -2562,7 +2591,7 @@ impl Air {
                 self.motes.push(mote1);
 
                 // Dense core puff only for truly deep snowdrifts
-                if depth > 5.0 && self.cloud_amount > 0.8 && self.motes.len() < self.max_motes {
+                if depth > (depth_thresh + 4.0) && self.cloud_amount > 0.8 && self.motes.len() < self.max_motes {
                     let (pos2, vel2, sz2, al2, life2) = {
                         let r2 = &mut self.random;
                         (

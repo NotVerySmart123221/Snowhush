@@ -288,6 +288,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--cloud-depth-threshold" | "--cloud-threshold" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_depth_threshold = val.clamp(0.0, 10.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--cloud-depth-scale" | "--cloud-scale" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_depth_scale = val.clamp(0.1, 5.0);
+                    }
+                    i += 1;
+                }
+            }
             "--max-snow" => {
                 if i + 1 < args.len() {
                     if let Ok(val) = args[i + 1].parse::<usize>() {
@@ -353,6 +369,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --cloud-random <FLOAT> Cloud mote trajectory, speed and gravity randomness [default: 1.0]");
                 println!("      --cloud-accel <FLOAT> Cloud mote acceleration and kinetic speed multiplier [default: 1.0]");
                 println!("      --cloud-fade-rate <FLOAT> Cloud mote decay and dissipation speed multiplier [default: 1.0]");
+                println!("      --cloud-depth-threshold <PX> Minimum snowdrift depth (px) required to emit cloud smoke [0.0-10.0, default: 1.0]");
+                println!("      --cloud-depth-scale <FLOAT> Cloud smoke volume sensitivity scaling with drift depth [0.1-5.0, default: 1.0]");
                 println!("      --max-snow <INT>      Maximum active airborne snowflakes limit [default: 2500]");
                 println!("      --max-effects <INT>   Maximum active particle and cloud effects limit [default: 5000]");
                 println!("      --dynamic-weather     Enable dynamic weather cycles (wind, speed, density)");

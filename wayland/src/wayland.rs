@@ -68,6 +68,8 @@ pub struct AppConfig {
     pub cloud_random: f32,
     pub cloud_accel: f32,
     pub cloud_fade_rate: f32,
+    pub cloud_depth_threshold: f32,
+    pub cloud_depth_scale: f32,
     pub max_snow: usize,
     pub max_effects: usize,
     pub dynamic_weather: bool,
@@ -114,6 +116,8 @@ impl Default for AppConfig {
             cloud_random: 1.0,
             cloud_accel: 1.0,
             cloud_fade_rate: 1.0,
+            cloud_depth_threshold: 1.0,
+            cloud_depth_scale: 1.0,
             max_snow: 2500,
             max_effects: 5000,
             dynamic_weather: false,
@@ -191,6 +195,10 @@ pub struct JsonConfig {
     pub cloud_accel: f32,
     #[serde(default = "default_one")]
     pub cloud_fade_rate: f32,
+    #[serde(default = "default_one")]
+    pub cloud_depth_threshold: f32,
+    #[serde(default = "default_one")]
+    pub cloud_depth_scale: f32,
     #[serde(default = "default_max_snow")]
     pub max_snow: usize,
     #[serde(default = "default_max_effects")]
@@ -288,6 +296,8 @@ impl JsonConfig {
             cloud_random: cfg.cloud_random,
             cloud_accel: cfg.cloud_accel,
             cloud_fade_rate: cfg.cloud_fade_rate,
+            cloud_depth_threshold: cfg.cloud_depth_threshold,
+            cloud_depth_scale: cfg.cloud_depth_scale,
             max_snow: cfg.max_snow,
             max_effects: cfg.max_effects,
             dynamic_weather: cfg.dynamic_weather,
@@ -342,6 +352,8 @@ impl JsonConfig {
             cloud_random: self.cloud_random.clamp(0.0, 5.0),
             cloud_accel: self.cloud_accel.clamp(0.05, 5.0),
             cloud_fade_rate: self.cloud_fade_rate.clamp(0.1, 5.0),
+            cloud_depth_threshold: self.cloud_depth_threshold.clamp(0.0, 10.0),
+            cloud_depth_scale: self.cloud_depth_scale.clamp(0.1, 5.0),
             max_snow: self.max_snow.clamp(10, 50000),
             max_effects: self.max_effects.clamp(50, 100000),
             dynamic_weather: self.dynamic_weather,
@@ -564,6 +576,8 @@ impl SnowhushApp {
         self.simulation.cloud_random = new_cfg.cloud_random;
         self.simulation.cloud_accel = new_cfg.cloud_accel;
         self.simulation.cloud_fade_rate = new_cfg.cloud_fade_rate;
+        self.simulation.cloud_depth_threshold = new_cfg.cloud_depth_threshold;
+        self.simulation.cloud_depth_scale = new_cfg.cloud_depth_scale;
         self.simulation.max_snow = new_cfg.max_snow;
         self.simulation.max_effects = new_cfg.max_effects;
         self.simulation.no_fullscreen_snow = new_cfg.no_fullscreen_snow;

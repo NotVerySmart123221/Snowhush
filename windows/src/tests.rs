@@ -1453,3 +1453,22 @@ fn test_window_rapid_retraction_downwards_sweeps_off_snow() {
     let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05).collect();
     assert!(!grains.is_empty(), "rapid downward retraction must sweep off snow into flying grains");
 }
+
+#[test]
+fn test_shallow_snow_specks_do_not_emit_cloud_smoke() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.cloud_amount = 2.0;
+
+    // Small speck of snow with depth 0.4px (area = 0.8)
+    let frame = Rect { x: 200.0, y: 50.0, width: 400.0, height: 200.0 };
+    for _ in 0..10 {
+        sim.emit_scatter_for_test(0.8, 300.0, 1.0, 0.5, frame, V2::new(150.0, -200.0));
+    }
+    assert_eq!(sim.mote_count(), 0, "shallow snow specks (< 1.0px depth) must not emit any cloud smoke");
+
+    // Deep snowdrift with depth 8.0px (area = 16.0)
+    for _ in 0..5 {
+        sim.emit_scatter_for_test(16.0, 300.0, 10.0, 2.0, frame, V2::new(150.0, -200.0));
+    }
+    assert!(sim.mote_count() > 0, "deep snowdrift must emit billowing cloud smoke proportional to depth");
+}

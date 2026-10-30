@@ -2086,6 +2086,8 @@ impl Air {
             let mut area = 0.0;
             let mut lowest = f32::MAX;
             let mut highest = -f32::MAX;
+            let mut total_h = 0.0;
+            let mut count_cols = 0;
             for i in start..end {
                 let h = ledge.heights[i];
                 if h <= 0.05 {
@@ -2094,6 +2096,8 @@ impl Air {
                 area += h * share * COLUMN_WIDTH;
                 lowest = lowest.min(ledge.floor(i) + h * (1.0 - share));
                 highest = highest.max(ledge.floor(i) + h);
+                total_h += h;
+                count_cols += 1;
             }
             if area <= 0.05 {
                 start = end;
@@ -2146,31 +2150,38 @@ impl Air {
                 let lump_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
                 self.throw_lump(area * cohesion, V2::new(mid_x, lump_y), lump_vel);
             }
-            let mote_chance = if velocity.y > 40.0 || velocity.length() > 100.0 { 0.75 } else { 0.45 };
-            if self.cloud_amount > 0.001 && self.motes.len() < self.max_motes && self.random.next() < mote_chance * self.cloud_amount.min(2.0) {
-                let left = ledge.center_x(start);
-                let right = ledge.center_x(end - 1);
-                let mote_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
-                let center = V2::new((left + right) * 0.5, mote_y);
-                let (pos, mote_v, sz, al, life) = {
-                    let r = &mut self.random;
-                    let mote_v = if velocity.y > 40.0 {
-                        let rel_x = ((center.x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
-                        let side_boost = rel_x * (velocity.y * 0.35).clamp(40.0, 320.0) + r.range(-25.0, 25.0);
-                        let up_boost = velocity.y * r.range(0.6, 0.95) + r.range(40.0, 110.0);
-                        V2::new(velocity.x * 0.6 + side_boost, up_boost)
-                    } else {
-                        let speed = velocity.length();
-                        velocity * 0.6 + V2::new(r.range(-40.0, 40.0), r.range(30.0, 120.0) + speed * 0.1)
+            let avg_depth = if count_cols > 0 { total_h / count_cols as f32 } else { 0.0 };
+            // Cloud smoke amount and puff size strictly scale with snowdrift depth.
+            // Small snowdrifts or edge specks (< 1.0 px) produce NO smoke clouds.
+            if self.cloud_amount > 0.001 && avg_depth >= 1.0 && self.motes.len() < self.max_motes {
+                let depth_factor = ((avg_depth - 1.0) / 7.0).clamp(0.0, 1.0);
+                let speed_boost = if velocity.y > 40.0 || velocity.length() > 100.0 { 1.2 } else { 0.8 };
+                let mote_chance = (depth_factor * 0.70 * speed_boost * self.cloud_amount).clamp(0.0, 0.9);
+                if self.random.next() < mote_chance {
+                    let left = ledge.center_x(start);
+                    let right = ledge.center_x(end - 1);
+                    let mote_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
+                    let center = V2::new((left + right) * 0.5, mote_y);
+                    let (pos, mote_v, sz, al, life) = {
+                        let r = &mut self.random;
+                        let mote_v = if velocity.y > 40.0 {
+                            let rel_x = ((center.x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
+                            let side_boost = rel_x * (velocity.y * 0.35).clamp(40.0, 320.0) + r.range(-25.0, 25.0);
+                            let up_boost = velocity.y * r.range(0.6, 0.95) + r.range(40.0, 110.0);
+                            V2::new(velocity.x * 0.6 + side_boost, up_boost)
+                        } else {
+                            let speed = velocity.length();
+                            velocity * 0.6 + V2::new(r.range(-40.0, 40.0), r.range(30.0, 120.0) + speed * 0.1)
+                        };
+                        let pos = center + V2::new(r.range(-5.0, 5.0), r.range(-2.0, 4.0));
+                        let sz = (r.range(10.0, 18.0) + depth_factor * r.range(12.0, 24.0)) * self.cloud_size;
+                        let al = r.range(0.06, 0.14) + depth_factor * r.range(0.10, 0.22);
+                        let life = r.range(0.5, 1.3);
+                        (pos, mote_v, sz, al, life)
                     };
-                    let pos = center + V2::new(r.range(-6.0, 6.0), r.range(-2.0, 5.0));
-                    let sz = r.range(16.0, 38.0);
-                    let al = r.range(0.18, 0.38);
-                    let life = r.range(0.6, 1.4);
-                    (pos, mote_v, sz, al, life)
-                };
-                let mote = self.make_mote(pos, mote_v, sz, al, life);
-                self.motes.push(mote);
+                    let mote = self.make_mote(pos, mote_v, sz, al, life);
+                    self.motes.push(mote);
+                }
             }
             start = end;
         }
@@ -2372,21 +2383,26 @@ impl Air {
             self.grains.push(grain);
         }
 
-        // Add cloud motes (эффект облачков) for the cursor
-        if self.cloud_amount > 0.001 && (self.random.next() < 0.55 * self.cloud_amount || speed > 120.0) && self.motes.len() < self.max_motes {
-            let (pos, mote_v, sz, al, life) = {
-                let r = &mut self.random;
-                let mote_v = velocity * r.range(0.3, 0.7)
-                    + outward * (speed * r.range(0.1, 0.3))
-                    + V2::new(r.range(-35.0, 35.0), r.range(30.0, 90.0));
-                let pos = origin + V2::new(r.range(-3.0, 3.0), r.range(-1.0, 4.0));
-                let sz = r.range(14.0, 32.0);
-                let al = r.range(0.20, 0.40);
-                let life = r.range(0.6, 1.4);
-                (pos, mote_v, sz, al, life)
-            };
-            let mote = self.make_mote(pos, mote_v, sz, al, life);
-            self.motes.push(mote);
+        // Add cloud motes (эффект облачков) for the cursor, strictly dependent on snowdrift depth
+        let depth = area / COLUMN_WIDTH;
+        if self.cloud_amount > 0.001 && depth >= 1.0 && self.motes.len() < self.max_motes {
+            let depth_factor = ((depth - 1.0) / 6.0).clamp(0.0, 1.0);
+            let mote_chance = (depth_factor * 0.70 * self.cloud_amount).clamp(0.0, 0.9);
+            if self.random.next() < mote_chance {
+                let (pos, mote_v, sz, al, life) = {
+                    let r = &mut self.random;
+                    let mote_v = velocity * r.range(0.3, 0.7)
+                        + outward * (speed * r.range(0.1, 0.3))
+                        + V2::new(r.range(-35.0, 35.0), r.range(30.0, 90.0));
+                    let pos = origin + V2::new(r.range(-3.0, 3.0), r.range(-1.0, 4.0));
+                    let sz = (r.range(10.0, 18.0) + depth_factor * r.range(8.0, 18.0)) * self.cloud_size;
+                    let al = r.range(0.10, 0.18) + depth_factor * r.range(0.10, 0.20);
+                    let life = r.range(0.6, 1.4);
+                    (pos, mote_v, sz, al, life)
+                };
+                let mote = self.make_mote(pos, mote_v, sz, al, life);
+                self.motes.push(mote);
+            }
         }
 
         area
@@ -2417,24 +2433,28 @@ impl Air {
             self.grains.push(grain);
         }
 
-        // Billowing cloud motes (эффект облачков)
-        let motes_to_spawn = ((area / 1.5).ceil() as usize).clamp(1, 4);
-        for _ in 0..motes_to_spawn {
-            if self.motes.len() >= self.max_motes {
-                break;
+        // Billowing cloud motes (эффект облачков), strictly scaling with depth
+        let depth = area / COLUMN_WIDTH;
+        if depth >= 1.0 && self.cloud_amount > 0.001 {
+            let depth_factor = ((depth - 1.0) / 7.0).clamp(0.0, 1.0);
+            let motes_to_spawn = ((depth_factor * 3.0 * self.cloud_amount).round() as usize).clamp(1, 4);
+            for _ in 0..motes_to_spawn {
+                if self.motes.len() >= self.max_motes {
+                    break;
+                }
+                let (pos, vel, sz, al, life) = {
+                    let r = &mut self.random;
+                    let mote_vx = dir * r.range(speed * 0.45, speed * 0.95) + r.range(-20.0, 20.0);
+                    let mote_vy = r.range(40.0, 160.0);
+                    let pos = origin + V2::new(r.range(-5.0, 5.0), r.range(0.0, 8.0));
+                    let sz = (r.range(14.0, 24.0) + depth_factor * r.range(12.0, 28.0)) * self.cloud_size;
+                    let al = r.range(0.15, 0.28) + depth_factor * r.range(0.18, 0.36);
+                    let life = r.range(0.6, 1.4);
+                    (pos, V2::new(mote_vx, mote_vy), sz, al, life)
+                };
+                let mote = self.make_mote(pos, vel, sz, al, life);
+                self.motes.push(mote);
             }
-            let (pos, vel, sz, al, life) = {
-                let r = &mut self.random;
-                let mote_vx = dir * r.range(speed * 0.45, speed * 0.95) + r.range(-20.0, 20.0);
-                let mote_vy = r.range(40.0, 160.0);
-                let pos = origin + V2::new(r.range(-5.0, 5.0), r.range(0.0, 8.0));
-                let sz = r.range(22.0, 48.0);
-                let al = r.range(0.40, 0.70);
-                let life = r.range(0.6, 1.4);
-                (pos, V2::new(mote_vx, mote_vy), sz, al, life)
-            };
-            let mote = self.make_mote(pos, vel, sz, al, life);
-            self.motes.push(mote);
         }
     }
 
@@ -2513,40 +2533,44 @@ impl Air {
         }
 
         // Billowing clouds (эффект облачков)
-        if self.cloud_amount > 0.001 {
+        // Smoke amount and puff size strictly scale with snowdrift depth (area / COLUMN_WIDTH).
+        // Specks and thin edges (< 1.0 px depth) produce NO smoke.
+        let depth = area / COLUMN_WIDTH;
+        if self.cloud_amount > 0.001 && depth >= 1.0 {
             let r = &mut self.random;
-            let mote_chance = ((area / 2.0).clamp(0.25, 0.85) * self.cloud_amount).clamp(0.05, 1.0);
+            let depth_factor = ((depth - 1.0) / 7.0).clamp(0.0, 1.0);
+            let mote_chance = (depth_factor * 0.80 * self.cloud_amount).clamp(0.0, 0.95);
             if r.next() < mote_chance && self.motes.len() < self.max_motes {
                 let mote_vx = if is_crushing {
-                    side_dir * (r.range(80.0, 240.0) + downward_speed * 0.4) + velocity.x * 0.4 + r.range(-20.0, 20.0)
+                    side_dir * (r.range(70.0, 220.0) + downward_speed * 0.4) + velocity.x * 0.4 + r.range(-20.0, 20.0)
                 } else {
-                    velocity.x * r.range(0.8, 1.4) + side_dir * (r.range(60.0, 160.0) + speed * 0.25) + r.range(-20.0, 20.0)
+                    velocity.x * r.range(0.8, 1.4) + side_dir * (r.range(50.0, 140.0) + speed * 0.25) + r.range(-20.0, 20.0)
                 };
-                let mote_vy = r.range(90.0, 260.0) + speed * 0.25;
+                let mote_vy = r.range(70.0, 220.0) + speed * 0.22;
                 let spawn_x = col_x + side_dir * r.range(2.0, 10.0);
                 let spawn_y = win_bottom + r.range(2.0, 6.0);
                 let (pos1, vel1, sz1, al1, life1) = (
                     V2::new(spawn_x, spawn_y),
                     V2::new(mote_vx * 0.7, mote_vy * 0.8),
-                    r.range(24.0, 52.0),
-                    r.range(0.20, 0.42),
-                    r.range(0.8, 1.6),
+                    (r.range(12.0, 20.0) + depth_factor * r.range(14.0, 30.0)) * self.cloud_size,
+                    (r.range(0.08, 0.16) + depth_factor * r.range(0.12, 0.24)),
+                    r.range(0.7, 1.5),
                 );
 
-                // Large billowing mist cloud
+                // Billowing mist cloud
                 let mote1 = self.make_mote(pos1, vel1, sz1, al1, life1);
                 self.motes.push(mote1);
 
-                // Bright dense core puff if displacement is prominent
-                if (area > 1.0 || self.cloud_amount > 1.2) && self.motes.len() < self.max_motes {
+                // Dense core puff only for truly deep snowdrifts
+                if depth > 5.0 && self.cloud_amount > 0.8 && self.motes.len() < self.max_motes {
                     let (pos2, vel2, sz2, al2, life2) = {
                         let r2 = &mut self.random;
                         (
                             V2::new(spawn_x + r2.range(-3.0, 3.0), spawn_y + r2.range(-1.0, 3.0)),
                             V2::new(mote_vx * 0.95, mote_vy * 0.95),
-                            r2.range(14.0, 26.0),
-                            r2.range(0.30, 0.55),
-                            r2.range(0.5, 1.1),
+                            (r2.range(10.0, 16.0) + depth_factor * r2.range(6.0, 12.0)) * self.cloud_size,
+                            (r2.range(0.15, 0.28) + depth_factor * r2.range(0.15, 0.25)),
+                            r2.range(0.5, 1.0),
                         )
                     };
                     let mote2 = self.make_mote(pos2, vel2, sz2, al2, life2);

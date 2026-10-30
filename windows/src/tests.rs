@@ -1418,3 +1418,38 @@ fn test_grain_and_cloud_randomization() {
     let dy2 = grains_after[1].position.y;
     assert!((dy1 - dy2).abs() > 0.001, "different grains should fall at randomized rates: {dy1} vs {dy2}");
 }
+
+#[test]
+fn test_window_rapid_retraction_downwards_sweeps_off_snow() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    sim.motion_shed = 1.0;
+    sim.shed_threshold = 100.0;
+
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 400.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+    run(&mut sim, 15.0, AWAY);
+    assert!(sim.has_snow(), "snow should accumulate on the window");
+
+    // Move window rapidly downwards: y decreases by 10px in 0.02s = -500 px/s
+    let win2 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 300.0, y: 390.0, width: 400.0, height: 200.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win2, 0.02, &none, &none, false);
+    sim.step(0.02, AWAY);
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05).collect();
+    assert!(!grains.is_empty(), "rapid downward retraction must sweep off snow into flying grains");
+}

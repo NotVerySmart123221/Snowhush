@@ -74,6 +74,7 @@ struct AnimatedSurface {
     corner_radius: f32,
     corner_exponent: f32,
     is_static: bool,
+    is_shm: bool,
     focus_order: i64,
     last_seen: Instant,
     wants_removal: bool,
@@ -123,6 +124,8 @@ pub struct HyprlandTracker {
     instance_sig: Option<String>,
     socket_path: Option<PathBuf>,
     animated_surfaces: HashMap<isize, AnimatedSurface>,
+    hypr_targets: HashMap<isize, (Rect, f32, bool, bool, i64)>,
+    desktop_window_ids: HashSet<isize>,
     last_surfaces_poll: Instant,
     last_frame_poll: Instant,
     config: TrackerConfig,
@@ -218,6 +221,8 @@ impl HyprlandTracker {
             instance_sig: sig,
             socket_path,
             animated_surfaces: HashMap::new(),
+            hypr_targets: HashMap::new(),
+            desktop_window_ids: HashSet::new(),
             last_surfaces_poll: Instant::now() - Duration::from_secs(10),
             last_frame_poll: Instant::now(),
             config,
@@ -346,11 +351,15 @@ impl CompositorTracker for HyprlandTracker {
             state.cursor = Some(V2::new(cursor.x, screen_height - cursor.y));
         }
 
-        if now.duration_since(self.last_surfaces_poll) >= Duration::from_millis(40) || self.animated_surfaces.is_empty() {
+        let is_locked = check_is_locked();
+        state.is_locked = is_locked;
+
+        let should_poll_hypr = now.duration_since(self.last_surfaces_poll) >= Duration::from_millis(16) || self.hypr_targets.is_empty();
+        if should_poll_hypr {
             self.last_surfaces_poll = now;
 
-            // Target surfaces collection: id -> (target_frame, radius, is_static, focus_order)
-            let mut targets: HashMap<isize, (Rect, f32, bool, i64)> = HashMap::new();
+            // Target surfaces collection: id -> (target_frame, radius, is_static, is_shm, focus_order)
+            let mut hypr: HashMap<isize, (Rect, f32, bool, bool, i64)> = HashMap::new();
 
             // Active workspace & workspace transition detection
             let mut active_workspaces = Vec::new();
@@ -379,82 +388,7 @@ impl CompositorTracker for HyprlandTracker {
                 }
             }
 
-            let is_locked = check_is_locked();
-            state.is_locked = is_locked;
-
             let mut desktop_window_ids = HashSet::new();
-            // Check Quickshell explicit ledges via /dev/shm/snowhush_ledges.json
-            if (self.config.track_layers || is_locked)
-                && let Ok(content) = std::fs::read_to_string("/dev/shm/snowhush_ledges.json")
-                && let Ok(shm_list) = serde_json::from_str::<Vec<ShmLedge>>(&content)
-            {
-                for ledge in shm_list {
-                            if ledge.id == "qs-lockscreen" {
-                                if is_locked && ledge.visible && ledge.width > 20.0 && ledge.height > 20.0 {
-                                    let mut hasher = DefaultHasher::new();
-                                    "qs-shm-".hash(&mut hasher);
-                                    ledge.id.hash(&mut hasher);
-                                    let id = hasher.finish() as isize;
-
-                                    let frame = Rect {
-                                        x: ledge.x,
-                                        y: screen_height - (ledge.y + ledge.height),
-                                        width: ledge.width,
-                                        height: ledge.height,
-                                    };
-                                    targets.insert(id, (frame, ledge.radius, true, -1000));
-                                }
-                                continue;
-                            }
-
-                            // If locked, skip regular desktop layers
-                            if is_locked {
-                                continue;
-                            }
-
-                            if ledge.width <= 10.0 || ledge.height <= 10.0 {
-                                continue;
-                            }
-
-                            // Trim or exclude ledges within top_margin
-                            let eff_top = if self.config.top_margin > 0.0 {
-                                ledge.y.max(self.config.top_margin)
-                            } else {
-                                ledge.y
-                            };
-                            let eff_bottom = ledge.y + ledge.height;
-
-                            if eff_bottom <= eff_top + 4.0 {
-                                continue;
-                            }
-
-                            let mut hasher = DefaultHasher::new();
-                            "qs-shm-".hash(&mut hasher);
-                            ledge.id.hash(&mut hasher);
-                            let id = hasher.finish() as isize;
-
-                            let eff_h = eff_bottom - eff_top;
-                            let target_y = if ledge.visible {
-                                screen_height - eff_bottom
-                            } else {
-                                // Slide off-screen when hidden
-                                if ledge.y > screen_height / 2.0 {
-                                    -eff_h - 40.0
-                                } else {
-                                    screen_height + 40.0
-                                }
-                            };
-
-                            let frame = Rect {
-                                x: ledge.x,
-                                y: target_y,
-                                width: ledge.width,
-                                height: eff_h,
-                            };
-
-                            targets.insert(id, (frame, ledge.radius, true, -1000));
-                        }
-                    }
 
             // Layer surfaces fallback / additional (only when not locked)
             if !is_locked && self.config.track_layers
@@ -505,7 +439,7 @@ impl CompositorTracker for HyprlandTracker {
                                 let mut hasher = DefaultHasher::new();
                                 item.address.hash(&mut hasher);
                                 let id = hasher.finish() as isize;
-                                targets.insert(id, (frame, 12.0, true, -800));
+                                hypr.insert(id, (frame, 12.0, true, false, -800));
                             }
                         }
                     }
@@ -580,40 +514,121 @@ impl CompositorTracker for HyprlandTracker {
                         let id = hasher.finish() as isize;
 
                         let radius = 12.0f32.min(win_w / 2.0).min(win_h / 2.0);
-                        targets.insert(id, (frame, radius, client.pinned, client.focus_history_id));
+                        hypr.insert(id, (frame, radius, client.pinned, false, client.focus_history_id));
                     }
                 }
             }
 
-            state.desktop_window_ids = desktop_window_ids;
-
-            // Sync targets into animated_surfaces map
-            for (id, (target_frame, radius, is_static, focus_order)) in &targets {
-                if let Some(anim) = self.animated_surfaces.get_mut(id) {
-                    anim.target_frame = *target_frame;
-                    anim.corner_radius = *radius;
-                    anim.is_static = *is_static;
-                    anim.focus_order = *focus_order;
-                    anim.last_seen = now;
-                    anim.wants_removal = false;
-                } else {
-                    self.animated_surfaces.insert(*id, AnimatedSurface {
-                        id: *id,
-                        current_frame: *target_frame,
-                        target_frame: *target_frame,
-                        velocity: [0.0; 4],
-                        corner_radius: *radius,
-                        corner_exponent: 2.0,
-                        is_static: *is_static,
-                        focus_order: *focus_order,
-                        last_seen: now,
-                        wants_removal: false,
-                    });
-                }
-            }
-
-            self.animated_surfaces.retain(|id, _| targets.contains_key(id));
+            self.hypr_targets = hypr;
+            self.desktop_window_ids = desktop_window_ids;
         }
+
+        state.desktop_window_ids = self.desktop_window_ids.clone();
+
+        // Target surfaces collection: id -> (target_frame, radius, is_static, is_shm, focus_order)
+        let mut targets: HashMap<isize, (Rect, f32, bool, bool, i64)> = self.hypr_targets.clone();
+
+        // Check Quickshell explicit ledges via /dev/shm/snowhush_ledges.json EVERY FRAME (fastest response)
+        if (self.config.track_layers || is_locked)
+            && let Ok(content) = std::fs::read_to_string("/dev/shm/snowhush_ledges.json")
+            && let Ok(shm_list) = serde_json::from_str::<Vec<ShmLedge>>(&content)
+        {
+            for ledge in shm_list {
+                if ledge.id == "qs-lockscreen" {
+                    if is_locked && ledge.visible && ledge.width > 20.0 && ledge.height > 20.0 {
+                        let mut hasher = DefaultHasher::new();
+                        "qs-shm-".hash(&mut hasher);
+                        ledge.id.hash(&mut hasher);
+                        let id = hasher.finish() as isize;
+
+                        let frame = Rect {
+                            x: ledge.x,
+                            y: screen_height - (ledge.y + ledge.height),
+                            width: ledge.width,
+                            height: ledge.height,
+                        };
+                        targets.insert(id, (frame, ledge.radius, true, true, -1000));
+                    }
+                    continue;
+                }
+
+                // If locked, skip regular desktop layers
+                if is_locked {
+                    continue;
+                }
+
+                if ledge.width <= 10.0 || ledge.height <= 10.0 {
+                    continue;
+                }
+
+                // Trim or exclude ledges within top_margin
+                let eff_top = if self.config.top_margin > 0.0 {
+                    ledge.y.max(self.config.top_margin)
+                } else {
+                    ledge.y
+                };
+                let eff_bottom = ledge.y + ledge.height;
+
+                if eff_bottom <= eff_top + 4.0 {
+                    continue;
+                }
+
+                let mut hasher = DefaultHasher::new();
+                "qs-shm-".hash(&mut hasher);
+                ledge.id.hash(&mut hasher);
+                let id = hasher.finish() as isize;
+
+                let eff_h = eff_bottom - eff_top;
+                let target_y = if ledge.visible {
+                    screen_height - eff_bottom
+                } else {
+                    // Slide off-screen when hidden
+                    if ledge.y > screen_height / 2.0 {
+                        -eff_h - 40.0
+                    } else {
+                        screen_height + 40.0
+                    }
+                };
+
+                let frame = Rect {
+                    x: ledge.x,
+                    y: target_y,
+                    width: ledge.width,
+                    height: eff_h,
+                };
+
+                targets.insert(id, (frame, ledge.radius, true, true, -1000));
+            }
+        }
+
+        // Sync targets into animated_surfaces map EVERY FRAME
+        for (id, (target_frame, radius, is_static, is_shm, focus_order)) in &targets {
+            if let Some(anim) = self.animated_surfaces.get_mut(id) {
+                anim.target_frame = *target_frame;
+                anim.corner_radius = *radius;
+                anim.is_static = *is_static;
+                anim.is_shm = *is_shm;
+                anim.focus_order = *focus_order;
+                anim.last_seen = now;
+                anim.wants_removal = false;
+            } else {
+                self.animated_surfaces.insert(*id, AnimatedSurface {
+                    id: *id,
+                    current_frame: *target_frame,
+                    target_frame: *target_frame,
+                    velocity: [0.0; 4],
+                    corner_radius: *radius,
+                    corner_exponent: 2.0,
+                    is_static: *is_static,
+                    is_shm: *is_shm,
+                    focus_order: *focus_order,
+                    last_seen: now,
+                    wants_removal: false,
+                });
+            }
+        }
+
+        self.animated_surfaces.retain(|id, _| targets.contains_key(id));
 
         // EVERY FRAME: Smooth animation interpolation
         let mut sorted_surfaces: Vec<&mut AnimatedSurface> = self.animated_surfaces.values_mut().collect();
@@ -624,7 +639,7 @@ impl CompositorTracker for HyprlandTracker {
         let mut static_out = HashSet::new();
 
         for anim in sorted_surfaces {
-            let time_constant = if anim.is_static { 0.14 } else { 0.11 };
+            let time_constant = if anim.is_shm { 0.012 } else if anim.is_static { 0.05 } else { 0.04 };
             smooth_damp_rect(&mut anim.current_frame, &mut anim.velocity, anim.target_frame, time_constant, dt);
 
             let frame = anim.current_frame;

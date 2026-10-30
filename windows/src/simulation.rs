@@ -1826,10 +1826,11 @@ impl Air {
         let win_vx = displacement.x / elapsed;
         let jumped = speed > JUMP_SPEED;
         let effective_threshold = (self.shed_threshold / self.motion_shed.max(0.1)).max(10.0);
+        let is_rapid = (speed >= effective_threshold || win_vy.abs() >= effective_threshold * 0.7) && self.motion_shed > 0.01;
         if jumped {
             // The window vanished from under the snow or jumped off-screen
             let launch_vel = if win_vy > 50.0 {
-                V2::new(win_vx.clamp(-800.0, 800.0) * 0.5, (win_vy * 1.35).clamp(350.0, 2200.0))
+                V2::new(win_vx.clamp(-800.0, 800.0) * 0.7, (win_vy * 1.45).clamp(350.0, 2400.0))
             } else {
                 V2::ZERO
             };
@@ -1840,15 +1841,19 @@ impl Air {
             for i in 0..ledge.count() {
                 ledge.set(i, 0.0);
             }
-        } else if speed >= effective_threshold && self.motion_shed > 0.01 {
+        } else if is_rapid {
             // Windows do not push snow; at or above shed_threshold they sweep the snow off!
             let sweep_vel = if win_vy > 30.0 {
-                let toss_y = (win_vy * 1.35).clamp(280.0, 2400.0) + self.random.range(150.0, 350.0);
-                let toss_x = win_vx * 0.5 + self.random.range(-70.0, 70.0);
+                let toss_y = (win_vy * 1.45).clamp(320.0, 2600.0) + self.random.range(180.0, 420.0);
+                let toss_x = win_vx * 0.85 + self.random.range(-90.0, 90.0);
+                V2::new(toss_x, toss_y)
+            } else if win_vy < -30.0 {
+                let toss_y = (-win_vy * 0.95).clamp(280.0, 2000.0) + self.random.range(120.0, 300.0);
+                let toss_x = win_vx * 0.85 + self.random.range(-120.0, 120.0);
                 V2::new(toss_x, toss_y)
             } else {
-                let toss_y = self.random.range(120.0, 300.0) + speed * 0.25;
-                let toss_x = win_vx * 0.35 + self.random.range(-60.0, 60.0);
+                let toss_y = self.random.range(160.0, 380.0) + speed * 0.45;
+                let toss_x = win_vx * 0.9 + self.random.range(-80.0, 80.0);
                 V2::new(toss_x, toss_y)
             };
             self.shed(ledge, 1.0, sweep_vel);
@@ -1878,7 +1883,7 @@ impl Air {
             ledge.replace(fresh);
         }
         ledge.origin = V2::new(left, top);
-        if jumped {
+        if jumped || is_rapid {
             ledge.track = ledge.origin;
         } else if was_resting {
             // Join the motion at its current pace, with the lag a steady follow would have, instead of as a jolt.
@@ -2141,7 +2146,8 @@ impl Air {
                 let lump_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
                 self.throw_lump(area * cohesion, V2::new(mid_x, lump_y), lump_vel);
             }
-            if self.motes.len() < self.max_motes && self.random.next() < 0.5 {
+            let mote_chance = if velocity.y > 40.0 || velocity.length() > 100.0 { 0.75 } else { 0.45 };
+            if self.cloud_amount > 0.001 && self.motes.len() < self.max_motes && self.random.next() < mote_chance * self.cloud_amount.min(2.0) {
                 let left = ledge.center_x(start);
                 let right = ledge.center_x(end - 1);
                 let mote_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
@@ -2150,17 +2156,17 @@ impl Air {
                     let r = &mut self.random;
                     let mote_v = if velocity.y > 40.0 {
                         let rel_x = ((center.x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
-                        let side_boost = rel_x * (velocity.y * 0.3).clamp(30.0, 260.0) + r.range(-20.0, 20.0);
-                        let up_boost = velocity.y * r.range(0.5, 0.8) + r.range(30.0, 90.0);
-                        V2::new(velocity.x * 0.5 + side_boost, up_boost)
+                        let side_boost = rel_x * (velocity.y * 0.35).clamp(40.0, 320.0) + r.range(-25.0, 25.0);
+                        let up_boost = velocity.y * r.range(0.6, 0.95) + r.range(40.0, 110.0);
+                        V2::new(velocity.x * 0.6 + side_boost, up_boost)
                     } else {
                         let speed = velocity.length();
-                        velocity * 0.5 + V2::new(r.range(-30.0, 30.0), r.range(20.0, 90.0) + speed * 0.05)
+                        velocity * 0.6 + V2::new(r.range(-40.0, 40.0), r.range(30.0, 120.0) + speed * 0.1)
                     };
-                    let pos = center + V2::new(r.range(-5.0, 5.0), r.range(-2.0, 4.0));
-                    let sz = r.range(8.0, 18.0);
-                    let al = r.range(0.08, 0.2);
-                    let life = r.range(0.5, 1.2);
+                    let pos = center + V2::new(r.range(-6.0, 6.0), r.range(-2.0, 5.0));
+                    let sz = r.range(16.0, 38.0);
+                    let al = r.range(0.18, 0.38);
+                    let life = r.range(0.6, 1.4);
                     (pos, mote_v, sz, al, life)
                 };
                 let mote = self.make_mote(pos, mote_v, sz, al, life);
@@ -2475,16 +2481,16 @@ impl Air {
                 let px = col_x * (1.0 - t_edge) + edge_x * t_edge + r.range(-3.0, 3.0);
                 let py = win_bottom + r.range(1.0, 5.0);
 
-                let outward_burst = side_dir * (r.range(80.0, 220.0) + (1.0 + rel_x.abs()) * 65.0 + downward_speed * 0.4);
-                let upward_burst = r.range(130.0, 320.0) + downward_speed * 0.6;
-                let vx = outward_burst + velocity.x * 0.25 + r.range(-20.0, 20.0);
+                let outward_burst = side_dir * (r.range(120.0, 320.0) + (1.0 + rel_x.abs()) * 90.0 + downward_speed * 0.6);
+                let upward_burst = r.range(180.0, 420.0) + downward_speed * 0.8;
+                let vx = outward_burst + velocity.x * 0.5 + r.range(-30.0, 30.0);
                 let vy = upward_burst;
                 (vx, vy, V2::new(px, py))
             } else {
-                // Horizontal sweeping: fling/scatter snow outward and upward, NOT pushed forward
-                let side_burst = side_dir * (r.range(90.0, 240.0) + (1.0 + rel_x.abs()) * 70.0);
-                let upward_burst = r.range(120.0, 320.0) + speed * 0.25;
-                let fling_x = side_burst + velocity.x * 0.25 + r.range(-20.0, 20.0);
+                // Horizontal sweeping: fling/scatter snow outward and upward with high kinetic energy
+                let side_burst = side_dir * (r.range(140.0, 340.0) + (1.0 + rel_x.abs()) * 100.0 + speed * 0.35);
+                let upward_burst = r.range(160.0, 400.0) + speed * 0.45;
+                let fling_x = side_burst + velocity.x * 0.85 + r.range(-30.0, 30.0);
                 let fling_y = upward_burst;
                 let px = col_x + side_dir * r.range(2.0, 8.0);
                 let py = (surface_y.min(win_bottom) + r.range(1.0, 4.0)).max(0.0);
@@ -2509,22 +2515,22 @@ impl Air {
         // Billowing clouds (эффект облачков)
         if self.cloud_amount > 0.001 {
             let r = &mut self.random;
-            let mote_chance = ((area / 2.5).clamp(0.2, 0.7) * self.cloud_amount).clamp(0.05, 1.0);
+            let mote_chance = ((area / 2.0).clamp(0.25, 0.85) * self.cloud_amount).clamp(0.05, 1.0);
             if r.next() < mote_chance && self.motes.len() < self.max_motes {
                 let mote_vx = if is_crushing {
-                    side_dir * (r.range(60.0, 180.0) + downward_speed * 0.3) + velocity.x * 0.2 + r.range(-20.0, 20.0)
+                    side_dir * (r.range(80.0, 240.0) + downward_speed * 0.4) + velocity.x * 0.4 + r.range(-20.0, 20.0)
                 } else {
-                    velocity.x * r.range(0.6, 1.4) + side_dir * r.range(25.0, 70.0) + r.range(-20.0, 20.0)
+                    velocity.x * r.range(0.8, 1.4) + side_dir * (r.range(60.0, 160.0) + speed * 0.25) + r.range(-20.0, 20.0)
                 };
-                let mote_vy = r.range(60.0, 200.0) + speed * 0.12;
+                let mote_vy = r.range(90.0, 260.0) + speed * 0.25;
                 let spawn_x = col_x + side_dir * r.range(2.0, 10.0);
                 let spawn_y = win_bottom + r.range(2.0, 6.0);
                 let (pos1, vel1, sz1, al1, life1) = (
                     V2::new(spawn_x, spawn_y),
-                    V2::new(mote_vx * 0.6, mote_vy * 0.7),
-                    r.range(20.0, 45.0),
-                    r.range(0.18, 0.35),
-                    r.range(0.8, 1.5),
+                    V2::new(mote_vx * 0.7, mote_vy * 0.8),
+                    r.range(24.0, 52.0),
+                    r.range(0.20, 0.42),
+                    r.range(0.8, 1.6),
                 );
 
                 // Large billowing mist cloud
@@ -2532,15 +2538,15 @@ impl Air {
                 self.motes.push(mote1);
 
                 // Bright dense core puff if displacement is prominent
-                if (area > 1.2 || self.cloud_amount > 1.4) && self.motes.len() < self.max_motes {
+                if (area > 1.0 || self.cloud_amount > 1.2) && self.motes.len() < self.max_motes {
                     let (pos2, vel2, sz2, al2, life2) = {
                         let r2 = &mut self.random;
                         (
                             V2::new(spawn_x + r2.range(-3.0, 3.0), spawn_y + r2.range(-1.0, 3.0)),
-                            V2::new(mote_vx * 0.85, mote_vy * 0.9),
-                            r2.range(12.0, 22.0),
-                            r2.range(0.28, 0.48),
-                            r2.range(0.5, 1.0),
+                            V2::new(mote_vx * 0.95, mote_vy * 0.95),
+                            r2.range(14.0, 26.0),
+                            r2.range(0.30, 0.55),
+                            r2.range(0.5, 1.1),
                         )
                     };
                     let mote2 = self.make_mote(pos2, vel2, sz2, al2, life2);

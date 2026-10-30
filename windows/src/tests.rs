@@ -1167,3 +1167,44 @@ fn test_window_flying_upwards_launches_snow_up_and_to_sides() {
 
     assert!(sim.grain_count() > 0, "snow must be launched as grains into the air");
 }
+
+#[test]
+fn test_dock_upward_movement_launches_grains_up_and_spreads() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    let dock1 = [WindowSurface {
+        id: 99,
+        frame: Rect { x: 300.0, y: 50.0, width: 500.0, height: 60.0 },
+        blockers: Vec::new(),
+        corner_radius: 12.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&dock1, 0.2, &none, &none, false);
+    run(&mut sim, 12.0, AWAY);
+    assert!(sim.has_snow(), "snow should have settled on the dock");
+
+    // Dock rises upward at realistic animation speed (displacement = 6.0px in 0.016s = 375 px/s)
+    let dock2 = [WindowSurface {
+        id: 99,
+        frame: Rect { x: 300.0, y: 56.0, width: 500.0, height: 60.0 },
+        blockers: Vec::new(),
+        corner_radius: 12.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&dock2, 0.016, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    assert!(sim.grain_count() > 0, "dock moving up at 375 px/s must fling snow into the air");
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    let upward_grains = sprites[..count].iter().filter(|s| {
+        ((s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05) && s.velocity.y > 100.0
+    }).count();
+    assert!(upward_grains > 0, "grains must have strong upward velocity when launched by rising dock: {upward_grains}");
+
+    let sideways_grains = sprites[..count].iter().filter(|s| {
+        ((s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05) && s.velocity.x.abs() > 30.0
+    }).count();
+    assert!(sideways_grains > 0, "grains must spread sideways when launched by rising dock: {sideways_grains}");
+}

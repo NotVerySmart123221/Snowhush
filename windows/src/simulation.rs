@@ -1740,7 +1740,7 @@ impl Air {
         if jumped {
             // The window vanished from under the snow or jumped off-screen
             let launch_vel = if win_vy > 50.0 {
-                V2::new(win_vx.clamp(-800.0, 800.0) * 0.5, win_vy.clamp(200.0, 1800.0))
+                V2::new(win_vx.clamp(-800.0, 800.0) * 0.5, (win_vy * 1.35).clamp(350.0, 2200.0))
             } else {
                 V2::ZERO
             };
@@ -1749,15 +1749,18 @@ impl Air {
             ledge.offset_velocity = V2::ZERO;
             ledge.track_velocity = V2::ZERO;
         } else if self.motion_shed > 0.01 {
-            let shed_threshold = (1000.0 / self.motion_shed).clamp(200.0, 4000.0);
-            if speed > shed_threshold {
-                let excess = (speed - shed_threshold) / (shed_threshold * 0.6);
+            let up_threshold = (140.0 / self.motion_shed).clamp(50.0, 320.0);
+            let general_threshold = (1000.0 / self.motion_shed).clamp(200.0, 4000.0);
+            if win_vy > up_threshold {
+                let excess = (win_vy - up_threshold) / (up_threshold * 0.6);
+                let share = (excess * 1.4 * self.motion_shed).clamp(0.4, 1.0);
+                let toss_y = win_vy * 1.35 + self.random.range(220.0, 480.0);
+                let toss_x = win_vx * 0.6 + self.random.range(-70.0, 70.0);
+                self.shed(ledge, share, V2::new(toss_x, toss_y));
+            } else if speed > general_threshold {
+                let excess = (speed - general_threshold) / (general_threshold * 0.6);
                 let share = (excess * 1.2 * self.motion_shed).clamp(0.25, 1.0);
-                let vy_toss = if win_vy > 0.0 {
-                    win_vy * 0.85 + self.random.range(60.0, 180.0)
-                } else {
-                    win_vy * 0.45 + self.random.range(40.0, 140.0)
-                };
+                let vy_toss = win_vy * 0.45 + self.random.range(40.0, 140.0);
                 let toss = V2::new(win_vx * 0.5 + self.random.range(-60.0, 60.0), vy_toss);
                 self.shed(ledge, share, toss);
             }
@@ -1881,6 +1884,16 @@ impl Air {
         };
         if lift > BREAK_LIFT {
             self.shed(ledge, 1.0, carried);
+            ledge.offset = V2::ZERO;
+            ledge.offset_velocity = V2::ZERO;
+        } else if self.motion_shed > 0.01
+            && previous_velocity.y > 70.0
+            && acceleration.y < -120.0
+            && ledge.top > 0.05
+        {
+            let fling_y = previous_velocity.y * 1.3 + self.random.range(180.0, 360.0);
+            let fling_x = carried.x * 0.8 + self.random.range(-50.0, 50.0);
+            self.shed(ledge, 1.0, V2::new(fling_x, fling_y));
             ledge.offset = V2::ZERO;
             ledge.offset_velocity = V2::ZERO;
         } else if ledge.agitation > shake_threshold {
@@ -2013,7 +2026,9 @@ impl Air {
 
                 let amount = h * share;
                 ledge.set(i, h - amount);
-                let position = V2::new(col_x, ledge.floor(i) + h - amount);
+                let surface_y = ledge.floor(i) + h;
+                let spawn_y = if velocity.y > 40.0 { surface_y + 1.5 } else { ledge.floor(i) + h - amount };
+                let position = V2::new(col_x, spawn_y);
                 self.release(amount * COLUMN_WIDTH * (1.0 - cohesion), position, col_vel, V2::new(COLUMN_WIDTH / 2.0, amount), 0.3);
             }
             if cohesion > 0.0 {
@@ -2023,18 +2038,20 @@ impl Air {
                 let rel_x = ((mid_x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
                 let lump_vel = if velocity.y > 40.0 {
                     let side_dir = if rel_x.abs() > 0.04 { rel_x.signum() } else { 1.0 };
-                    let side_boost = side_dir * (rel_x.abs() * (velocity.y * 0.35).clamp(50.0, 360.0) + self.random.range(20.0, 70.0));
-                    let up_boost = velocity.y * self.random.range(0.85, 1.2) + self.random.range(20.0, 70.0);
+                    let side_boost = side_dir * (rel_x.abs() * (velocity.y * 0.4).clamp(60.0, 400.0) + self.random.range(30.0, 90.0));
+                    let up_boost = velocity.y * self.random.range(0.9, 1.25) + self.random.range(30.0, 80.0);
                     V2::new(velocity.x + side_boost, up_boost)
                 } else {
                     velocity
                 };
-                self.throw_lump(area * cohesion, V2::new(mid_x, (lowest + highest) * 0.5), lump_vel);
+                let lump_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
+                self.throw_lump(area * cohesion, V2::new(mid_x, lump_y), lump_vel);
             }
             if self.motes.len() < MAX_MOTES && self.random.next() < 0.5 {
                 let left = ledge.center_x(start);
                 let right = ledge.center_x(end - 1);
-                let center = V2::new((left + right) * 0.5, (lowest + highest) * 0.5);
+                let mote_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
+                let center = V2::new((left + right) * 0.5, mote_y);
                 let mote_v = if velocity.y > 40.0 {
                     let rel_x = ((center.x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
                     let side_boost = rel_x * (velocity.y * 0.3).clamp(30.0, 260.0) + self.random.range(-20.0, 20.0);

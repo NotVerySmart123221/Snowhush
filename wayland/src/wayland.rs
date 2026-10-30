@@ -544,7 +544,9 @@ impl SnowhushApp {
         let tracked = self.tracker.poll(w, h);
 
         if let Some(delta) = tracked.workspace_changed {
-            let dir = if delta > 0.0 { 1.0 } else { -1.0 };
+            // Physical inertia: when switching right (delta > 0), the camera moves right
+            // so inertia throws snow to the LEFT (-1.0). Switching left throws snow to the RIGHT (+1.0).
+            let dir = if delta > 0.0 { -1.0 } else { 1.0 };
             let distance = delta.abs();
             if self.config.sweep_ground {
                 self.simulation.sweep_all(dir, distance, &tracked.static_surface_ids);

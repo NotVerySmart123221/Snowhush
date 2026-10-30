@@ -1230,17 +1230,20 @@ fn test_workspace_sweep_slider_controls_effect_strength() {
     assert_eq!(sim.workspace_transition_until, -10.0, "zero workspace_sweep must not trigger transition");
     assert!(sim.has_snow(), "snow should remain untouched when workspace_sweep is 0.0");
 
-    // When workspace_sweep is enabled, snow is swept with moderate speed and non-blown grains
+    // When workspace_sweep is enabled, snow is swept with flying grains and cloud motes
     sim.workspace_sweep = 0.5;
     sim.sweep_window_ledges(1.0, 1.0, &none);
     assert!(sim.workspace_transition_until > 0.0, "workspace transition must be triggered");
 
     let mut sprites = vec![Sprite::default(); 5000];
     let count = sim.write_sprites(&mut sprites);
-    // Grains must exist and their velocities should be moderate (< 500 px/s)
+    // Grains must exist and fly in the sweep direction
     let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05).collect();
     assert!(!grains.is_empty(), "grains should be spawned from swept snow");
-    for g in grains {
-        assert!(g.velocity.x.abs() < 550.0, "grain velocity must be controlled and not excessive: {}", g.velocity.x);
-    }
+    let flying_grains = grains.iter().filter(|g| g.velocity.x > 50.0).count();
+    assert!(flying_grains > 0, "grains must fly in the sweep direction: {flying_grains}");
+
+    // Cloud motes must be present
+    let motes: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 1.0).abs() < 0.05).collect();
+    assert!(!motes.is_empty(), "cloud motes must be spawned during workspace sweep");
 }

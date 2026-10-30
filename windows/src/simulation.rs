@@ -1190,32 +1190,6 @@ impl SnowSimulation {
             }
             grain.position += grain.velocity * (speed_scale * dt);
 
-            if self.window_wake > 0.001 {
-                for wake in &self.active_wakes {
-                    let wake_radius = 60.0 * (0.6 + 0.4 * self.window_wake.sqrt());
-                    if grain.position.x < wake.frame.min_x() - wake_radius
-                        || grain.position.x > wake.frame.max_x() + wake_radius
-                        || grain.position.y < wake.frame.min_y() - wake_radius
-                        || grain.position.y > wake.frame.max_y() + wake_radius
-                    {
-                        continue;
-                    }
-
-                    let clamped_x = grain.position.x.clamp(wake.frame.min_x(), wake.frame.max_x());
-                    let clamped_y = grain.position.y.clamp(wake.frame.min_y(), wake.frame.max_y());
-                    let diff = grain.position - V2::new(clamped_x, clamped_y);
-                    let dist_sq = diff.length_squared();
-
-                    if dist_sq < wake_radius * wake_radius {
-                        let dist = dist_sq.sqrt();
-                        let falloff = 1.0 - dist / wake_radius;
-                        let drag = (wake.velocity - grain.velocity) * (falloff * falloff * 5.0 * self.window_wake * dt).min(1.0);
-                        let push_dir = if dist > 0.01 { diff / dist } else { V2::new(0.0, 1.0) };
-                        grain.velocity += drag + push_dir * (falloff * 200.0 * self.window_wake * dt);
-                    }
-                }
-            }
-
             if grain.position.x < -30.0 || grain.position.x > self.width + 30.0 {
                 self.air.grains.swap_remove(i);
                 continue;
@@ -1992,6 +1966,10 @@ impl Air {
                 area += h * share * COLUMN_WIDTH;
                 lowest = lowest.min(ledge.floor(i) + h * (1.0 - share));
                 highest = highest.max(ledge.floor(i) + h);
+            }
+            if area <= 0.05 {
+                start = end;
+                continue;
             }
             let cohesion = if area > 14.0 { self.random.range(0.4, 0.7) } else { 0.0 };
             for i in start..end {

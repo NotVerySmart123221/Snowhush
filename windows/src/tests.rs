@@ -1104,3 +1104,37 @@ fn test_wind_erosion_peaks_only_and_threshold_controls() {
     // Flat baseline far away is not eroded (it may slightly gain from downwind deposited drift)
     assert!(flat_col >= 5.0, "flat base snow must not be eroded by wind");
 }
+
+#[test]
+fn test_clean_window_movement_never_spawns_clouds() {
+    let none = HashSet::new();
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.cloud_amount = 2.0;
+    sim.motion_shed = 3.0;
+
+    // Window with zero snow
+    let win1 = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 200.0, y: 300.0, width: 400.0, height: 300.0 },
+        blockers: Vec::new(),
+        corner_radius: 0.0,
+        corner_exponent: 2.0,
+    }];
+    sim.update_windows(&win1, 0.2, &none, &none, false);
+    sim.step(0.016, AWAY);
+
+    // Move the clean window violently across the screen
+    for i in 1..=10 {
+        let win = [WindowSurface {
+            id: 1,
+            frame: Rect { x: 200.0 + (i as f32) * 50.0, y: 300.0, width: 400.0, height: 300.0 },
+            blockers: Vec::new(),
+            corner_radius: 0.0,
+            corner_exponent: 2.0,
+        }];
+        sim.update_windows(&win, 0.016, &none, &none, false);
+        sim.step(0.016, AWAY);
+    }
+
+    assert_eq!(sim.mote_count(), 0, "moving a window with zero snow must never generate cloud motes from nowhere");
+}

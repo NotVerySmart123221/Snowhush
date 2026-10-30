@@ -1734,10 +1734,17 @@ impl Air {
         }
 
         let speed = displacement.length() / elapsed;
+        let win_vy = displacement.y / elapsed;
+        let win_vx = displacement.x / elapsed;
         let jumped = speed > JUMP_SPEED;
         if jumped {
-            // The window vanished from under the snow and reappeared elsewhere: nothing carried the snow along.
-            self.shed(ledge, 1.0, V2::ZERO);
+            // The window vanished from under the snow or jumped off-screen
+            let launch_vel = if win_vy > 50.0 {
+                V2::new(win_vx.clamp(-800.0, 800.0) * 0.5, win_vy.clamp(200.0, 1800.0))
+            } else {
+                V2::ZERO
+            };
+            self.shed(ledge, 1.0, launch_vel);
             ledge.offset = V2::ZERO;
             ledge.offset_velocity = V2::ZERO;
             ledge.track_velocity = V2::ZERO;
@@ -1746,7 +1753,12 @@ impl Air {
             if speed > shed_threshold {
                 let excess = (speed - shed_threshold) / (shed_threshold * 0.6);
                 let share = (excess * 1.2 * self.motion_shed).clamp(0.25, 1.0);
-                let toss = displacement / elapsed * 0.45 + V2::new(self.random.range(-60.0, 60.0), self.random.range(40.0, 140.0));
+                let vy_toss = if win_vy > 0.0 {
+                    win_vy * 0.85 + self.random.range(60.0, 180.0)
+                } else {
+                    win_vy * 0.45 + self.random.range(40.0, 140.0)
+                };
+                let toss = V2::new(win_vx * 0.5 + self.random.range(-60.0, 60.0), vy_toss);
                 self.shed(ledge, share, toss);
             }
         }
@@ -1952,9 +1964,13 @@ impl Air {
     /// Turns part of a ledge's snow into falling snow where it lies: a few columns at a time hold together
     /// as a lump, the rest pours off as powder.
     fn shed(&mut self, ledge: &mut SnowLayer, share: f32, velocity: V2) {
+        let ledge_count = ledge.count();
+        let ledge_center_x = ledge.origin.x + (ledge_count as f32 * COLUMN_WIDTH) * 0.5;
+        let half_w = ((ledge_count as f32 * COLUMN_WIDTH) * 0.5).max(10.0);
+
         let mut start = 0;
-        while start < ledge.count() {
-            let end = ledge.count().min(start + self.random.range(2.0, 7.0) as usize);
+        while start < ledge_count {
+            let end = ledge_count.min(start + self.random.range(2.0, 7.0) as usize);
             let mut area = 0.0;
             let mut lowest = f32::MAX;
             let mut highest = -f32::MAX;
@@ -1977,24 +1993,60 @@ impl Air {
                 if h <= 0.05 {
                     continue;
                 }
+                let col_x = ledge.center_x(i);
+                let rel_x = ((col_x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
+
+                let col_vel = if velocity.y > 40.0 {
+                    let side_dir = if rel_x.abs() > 0.04 {
+                        rel_x.signum()
+                    } else if self.random.next() > 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let side_boost = side_dir * (rel_x.abs() * (velocity.y * 0.4).clamp(60.0, 450.0) + self.random.range(30.0, 110.0));
+                    let up_boost = velocity.y * self.random.range(0.9, 1.3) + self.random.range(30.0, 90.0);
+                    V2::new(velocity.x + side_boost, up_boost)
+                } else {
+                    velocity
+                };
+
                 let amount = h * share;
                 ledge.set(i, h - amount);
-                let position = V2::new(ledge.center_x(i), ledge.floor(i) + h - amount);
-                self.release(amount * COLUMN_WIDTH * (1.0 - cohesion), position, velocity, V2::new(COLUMN_WIDTH / 2.0, amount), 0.25);
+                let position = V2::new(col_x, ledge.floor(i) + h - amount);
+                self.release(amount * COLUMN_WIDTH * (1.0 - cohesion), position, col_vel, V2::new(COLUMN_WIDTH / 2.0, amount), 0.3);
             }
             if cohesion > 0.0 {
                 let left = ledge.center_x(start);
                 let right = ledge.center_x(end - 1);
-                self.throw_lump(area * cohesion, V2::new((left + right) / 2.0, (lowest + highest) / 2.0), velocity);
+                let mid_x = (left + right) * 0.5;
+                let rel_x = ((mid_x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
+                let lump_vel = if velocity.y > 40.0 {
+                    let side_dir = if rel_x.abs() > 0.04 { rel_x.signum() } else { 1.0 };
+                    let side_boost = side_dir * (rel_x.abs() * (velocity.y * 0.35).clamp(50.0, 360.0) + self.random.range(20.0, 70.0));
+                    let up_boost = velocity.y * self.random.range(0.85, 1.2) + self.random.range(20.0, 70.0);
+                    V2::new(velocity.x + side_boost, up_boost)
+                } else {
+                    velocity
+                };
+                self.throw_lump(area * cohesion, V2::new(mid_x, (lowest + highest) * 0.5), lump_vel);
             }
             if self.motes.len() < MAX_MOTES && self.random.next() < 0.5 {
                 let left = ledge.center_x(start);
                 let right = ledge.center_x(end - 1);
                 let center = V2::new((left + right) * 0.5, (lowest + highest) * 0.5);
-                let speed = velocity.length();
+                let mote_v = if velocity.y > 40.0 {
+                    let rel_x = ((center.x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
+                    let side_boost = rel_x * (velocity.y * 0.3).clamp(30.0, 260.0) + self.random.range(-20.0, 20.0);
+                    let up_boost = velocity.y * self.random.range(0.5, 0.8) + self.random.range(30.0, 90.0);
+                    V2::new(velocity.x * 0.5 + side_boost, up_boost)
+                } else {
+                    let speed = velocity.length();
+                    velocity * 0.5 + V2::new(self.random.range(-30.0, 30.0), self.random.range(20.0, 90.0) + speed * 0.05)
+                };
                 self.motes.push(Mote {
                     position: center + V2::new(self.random.range(-5.0, 5.0), self.random.range(-2.0, 4.0)),
-                    velocity: velocity * 0.5 + V2::new(self.random.range(-30.0, 30.0), self.random.range(20.0, 90.0) + speed * 0.05),
+                    velocity: mote_v,
                     size: self.random.range(8.0, 18.0),
                     alpha: self.random.range(0.08, 0.2),
                     age: 0.0,
@@ -2014,10 +2066,20 @@ impl Air {
                 break;
             }
             let random = &mut self.random;
+            let (vx, vy) = if velocity.y > 40.0 {
+                (
+                    velocity.x * (1.0 + random.range(-0.15, 0.15)) + random.range(-25.0, 25.0),
+                    velocity.y * (1.0 + random.range(-0.1, 0.2)) + random.range(10.0, 40.0),
+                )
+            } else {
+                (
+                    velocity.x * (1.0 + random.range(-0.2, 0.2)) + random.range(-25.0, 25.0),
+                    velocity.y * (1.0 + random.range(-0.2, 0.2)) + random.range(-80.0, 0.0),
+                )
+            };
             self.grains.push(Grain {
                 position: position + V2::new(random.range(-2.0, 2.0), random.range(-1.0, 1.0)),
-                // Lumps break away a moment before the powder around them, so a falling sheet comes apart.
-                velocity: velocity * (1.0 + random.range(-0.2, 0.2)) + V2::new(random.range(-25.0, 25.0), random.range(-80.0, 0.0)),
+                velocity: V2::new(vx, vy),
                 area: share,
                 size: (share.sqrt() * 1.05).min(11.0),
                 lump: random.range(0.05, 1.0),

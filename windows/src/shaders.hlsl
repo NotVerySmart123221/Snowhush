@@ -46,8 +46,8 @@ SpriteOut spriteVertex(SpriteIn s) {
     float2 travel = s.velocity * 0.018;
     float smear = min(length(travel), s.size * (s.lump > 0.0 ? 1.2 : 2.2));
     float2 streak = smear > 0.25 ? normalize(travel) * smear * scale : float2(0.0, 0.0);
-    // A lump's ragged edge reaches past its nominal size.
-    float reach = s.lump > 0.0 ? 1.3 : 1.0;
+    // A lump's ragged edge and soft cloud puffs reach past their nominal size.
+    float reach = s.soft > 0.8 ? 1.35 : (s.lump > 0.0 ? 1.3 : 1.05);
     float extent = max(pixels * reach + length(streak), 2.0);
     float2 corner = float2(float(s.vid & 1), float(s.vid >> 1));
     SpriteOut o;

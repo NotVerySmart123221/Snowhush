@@ -1397,15 +1397,16 @@ fn test_grain_and_cloud_randomization() {
     let mut sprites = vec![Sprite::default(); 5000];
     let count = sim.write_sprites(&mut sprites);
     let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05).collect();
-    let motes: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 1.0).abs() < 0.05).collect();
+    let _motes: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 1.0).abs() < 0.05).collect();
 
     // Verify velocities are not identical (have non-zero variance)
     let grain_vx_min = grains.iter().map(|g| g.velocity.x).fold(f32::INFINITY, f32::min);
     let grain_vx_max = grains.iter().map(|g| g.velocity.x).fold(f32::NEG_INFINITY, f32::max);
     assert!(grain_vx_max - grain_vx_min > 5.0, "grain velocities must be randomized: min={grain_vx_min}, max={grain_vx_max}");
 
-    let mote_vy_min = motes.iter().map(|m| m.velocity.y).fold(f32::INFINITY, f32::min);
-    let mote_vy_max = motes.iter().map(|m| m.velocity.y).fold(f32::NEG_INFINITY, f32::max);
+    let motes = sim.mote_velocities_for_test();
+    let mote_vy_min = motes.iter().map(|m| m.y).fold(f32::INFINITY, f32::min);
+    let mote_vy_max = motes.iter().map(|m| m.y).fold(f32::NEG_INFINITY, f32::max);
     assert!(mote_vy_max - mote_vy_min > 5.0, "mote velocities must be randomized: min={mote_vy_min}, max={mote_vy_max}");
 
     // Advance simulation: verify trajectories diverge due to randomized gravity, drag, and flutter

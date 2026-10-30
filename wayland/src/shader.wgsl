@@ -51,13 +51,16 @@ fn sprite_vertex(
 ) -> SpriteOut {
     let pixels = sprite.size * uniforms.scale;
     let mb = uniforms.motion_blur.x;
+    let is_cloud = sprite.soft > 0.8;
     let travel = sprite.velocity * (0.018 * mb);
-    let smear = min(length(travel), sprite.size * select(2.2, 1.2, sprite.lump > 0.0) * mb);
+    // Cloud motes are diffuse billowing gas puffs: they must not streak like sharp rain/ice needles
+    let smear = select(min(length(travel), sprite.size * select(2.2, 1.2, sprite.lump > 0.0) * mb), 0.0, is_cloud);
     var streak = vec2<f32>(0.0, 0.0);
     if (mb > 0.01 && smear > 0.25) {
         streak = normalize(travel) * smear * uniforms.scale;
     }
-    let reach = select(1.0, 1.3, sprite.lump > 0.0);
+    // Generous quad reach for soft Gaussian-like cloud motes so alpha decays to 0.0 well inside the quad
+    let reach = select(select(1.05, 1.35, sprite.lump > 0.0), 1.35, is_cloud);
     let extent = max(pixels * reach + length(streak), 2.0);
     let corner = vec2<f32>(f32(vid & 1u), f32(vid >> 1u));
     

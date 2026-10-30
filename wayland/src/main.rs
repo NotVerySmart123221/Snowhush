@@ -256,6 +256,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--grain-random" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.grain_random = val.clamp(0.0, 5.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--cloud-random" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_random = val.clamp(0.0, 5.0);
+                    }
+                    i += 1;
+                }
+            }
             "--dynamic-weather" => {
                 config.dynamic_weather = true;
             }
@@ -301,6 +317,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --no-fullscreen-snow  Disable snow accumulation while any window is fullscreen");
                 println!("      --grain-speed <FLOAT> Physical snow grain velocity multiplier [default: 1.0]");
                 println!("      --grain-gravity <FLOAT> Physical snow grain gravity multiplier [default: 1.0]");
+                println!("      --grain-random <FLOAT> Grain trajectory, speed and gravity randomness [default: 1.0]");
+                println!("      --cloud-random <FLOAT> Cloud mote trajectory, speed and gravity randomness [default: 1.0]");
                 println!("      --dynamic-weather     Enable dynamic weather cycles (wind, speed, density)");
                 println!("      --weather-mode <MODE> Weather mode: auto, calm, breeze, blizzard, squall, thaw [default: auto]");
                 println!("      --weather-speed <FLOAT> Dynamic weather cycle speed multiplier [default: 1.0]");

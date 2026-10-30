@@ -459,7 +459,8 @@ impl CompositorTracker for HyprlandTracker {
                     let id = hasher.finish() as isize;
                     desktop_window_ids.insert(id);
 
-                    if client.fullscreen > 0 {
+                    let is_visible_ws = client.pinned || active_workspaces.is_empty() || active_workspaces.contains(&client.workspace.id);
+                    if client.fullscreen > 0 && is_visible_ws {
                         current_fullscreen.insert(id);
                         if !self.previous_fullscreen.contains(&id) {
                             state.fullscreen_windows.push(id);

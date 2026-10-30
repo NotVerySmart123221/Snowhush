@@ -90,7 +90,7 @@ impl Default for AppConfig {
             melt: true,
             melt_rate: 4.0,
             wind_accel: true,
-            wind_factor: 1.2,
+            wind_factor: 1.0,
             workspace_sweep: 1.0,
             wind_erosion_threshold: 55.0,
             wind_erosion_rate: 1.0,
@@ -99,25 +99,25 @@ impl Default for AppConfig {
             motion_shed: 1.0,
             shed_threshold: 450.0,
             cursor_force: 1.5,
-            cloud_density: 0.15,
-            cloud_amount: 1.5,
+            cloud_density: 1.0,
+            cloud_amount: 1.0,
             cloud_size: 1.0,
-            spray_density: 2.5,
+            spray_density: 1.0,
             spray_amount: 1.0,
-            spray_size: 1.3,
-            spray_force: 3.0,
-            ejection_force: 3.0,
-            window_wake: 0.1,
-            motion_blur: 1.3,
+            spray_size: 1.0,
+            spray_force: 1.0,
+            ejection_force: 1.0,
+            window_wake: 1.0,
+            motion_blur: 1.0,
             no_fullscreen_snow: true,
-            grain_speed: 0.4,
-            grain_gravity: 0.9,
-            grain_random: 0.9,
-            cloud_random: 0.8,
-            cloud_accel: 0.3,
-            cloud_fade_rate: 0.8,
+            grain_speed: 1.0,
+            grain_gravity: 1.0,
+            grain_random: 1.0,
+            cloud_random: 1.0,
+            cloud_accel: 1.0,
+            cloud_fade_rate: 1.0,
             cloud_depth_threshold: 1.0,
-            cloud_depth_scale: 1.4,
+            cloud_depth_scale: 1.0,
             max_snow: 2500,
             max_effects: 5000,
             dynamic_weather: false,
@@ -166,43 +166,43 @@ pub struct JsonConfig {
     pub shed_threshold: f32,
     #[serde(default = "default_cursor_force")]
     pub cursor_force: f32,
-    #[serde(default = "default_cloud_density")]
+    #[serde(default = "default_one")]
     pub cloud_density: f32,
-    #[serde(default = "default_cloud_amount")]
+    #[serde(default = "default_one")]
     pub cloud_amount: f32,
     #[serde(default = "default_one")]
     pub cloud_size: f32,
-    #[serde(default = "default_spray_density")]
+    #[serde(default = "default_one")]
     pub spray_density: f32,
     #[serde(default = "default_one")]
     pub spray_amount: f32,
-    #[serde(default = "default_spray_size")]
+    #[serde(default = "default_one")]
     pub spray_size: f32,
-    #[serde(default = "default_spray_force")]
+    #[serde(default = "default_one")]
     pub spray_force: f32,
-    #[serde(default = "default_ejection_force")]
+    #[serde(default = "default_one")]
     pub ejection_force: f32,
-    #[serde(default = "default_window_wake")]
+    #[serde(default = "default_one")]
     pub window_wake: f32,
-    #[serde(default = "default_motion_blur")]
+    #[serde(default = "default_one")]
     pub motion_blur: f32,
     #[serde(default = "default_no_fullscreen_snow")]
     pub no_fullscreen_snow: bool,
-    #[serde(default = "default_grain_speed")]
+    #[serde(default = "default_one")]
     pub grain_speed: f32,
-    #[serde(default = "default_grain_gravity")]
+    #[serde(default = "default_one")]
     pub grain_gravity: f32,
-    #[serde(default = "default_grain_random")]
+    #[serde(default = "default_one")]
     pub grain_random: f32,
-    #[serde(default = "default_cloud_random")]
+    #[serde(default = "default_one")]
     pub cloud_random: f32,
-    #[serde(default = "default_cloud_accel")]
+    #[serde(default = "default_one")]
     pub cloud_accel: f32,
-    #[serde(default = "default_cloud_fade_rate")]
+    #[serde(default = "default_one")]
     pub cloud_fade_rate: f32,
     #[serde(default = "default_one")]
     pub cloud_depth_threshold: f32,
-    #[serde(default = "default_cloud_depth_scale")]
+    #[serde(default = "default_one")]
     pub cloud_depth_scale: f32,
     #[serde(default = "default_max_snow")]
     pub max_snow: usize,
@@ -280,68 +280,8 @@ fn default_cursor_force() -> f32 {
     1.5
 }
 
-fn default_cloud_density() -> f32 {
-    0.15
-}
-
-fn default_cloud_amount() -> f32 {
-    1.5
-}
-
-fn default_spray_density() -> f32 {
-    2.5
-}
-
-fn default_spray_size() -> f32 {
-    1.3
-}
-
-fn default_spray_force() -> f32 {
-    3.0
-}
-
-fn default_ejection_force() -> f32 {
-    3.0
-}
-
-fn default_window_wake() -> f32 {
-    0.1
-}
-
-fn default_motion_blur() -> f32 {
-    1.3
-}
-
 fn default_no_fullscreen_snow() -> bool {
     true
-}
-
-fn default_grain_speed() -> f32 {
-    0.4
-}
-
-fn default_grain_gravity() -> f32 {
-    0.9
-}
-
-fn default_grain_random() -> f32 {
-    0.9
-}
-
-fn default_cloud_random() -> f32 {
-    0.8
-}
-
-fn default_cloud_accel() -> f32 {
-    0.3
-}
-
-fn default_cloud_fade_rate() -> f32 {
-    0.8
-}
-
-fn default_cloud_depth_scale() -> f32 {
-    1.4
 }
 
 fn default_weather_cycle_speed() -> f32 {

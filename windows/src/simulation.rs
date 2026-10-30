@@ -381,27 +381,27 @@ impl SnowSimulation {
             cursor_force: 1.5,
             speed_factor: 1.0,
             sway_factor: 1.0,
-            cloud_density: 0.15,
-            cloud_amount: 1.5,
+            cloud_density: 1.0,
+            cloud_amount: 1.0,
             cloud_size: 1.0,
             cloud_depth_threshold: 1.0,
-            cloud_depth_scale: 1.4,
-            spray_density: 2.5,
+            cloud_depth_scale: 1.0,
+            spray_density: 1.0,
             spray_amount: 1.0,
-            spray_size: 1.3,
-            spray_force: 3.0,
-            ejection_force: 3.0,
-            wind_erosion_threshold: 35.0,
+            spray_size: 1.0,
+            spray_force: 1.0,
+            ejection_force: 1.0,
+            wind_erosion_threshold: 55.0,
             wind_erosion_rate: 1.0,
             grain_speed: 1.0,
-            grain_gravity: 0.9,
-            grain_random: 0.9,
-            cloud_random: 0.8,
-            cloud_accel: 0.3,
+            grain_gravity: 1.0,
+            grain_random: 1.0,
+            cloud_random: 1.0,
+            cloud_accel: 1.0,
             cloud_fade_rate: 1.0,
             max_snow: 2500,
             max_effects: 5000,
-            motion_blur: 1.3,
+            motion_blur: 1.0,
             accumulates: true,
             no_fullscreen_snow: false,
             weather: crate::weather::WeatherSystem::new(),
@@ -430,7 +430,7 @@ impl SnowSimulation {
                 strength: 1.0,
                 static_wind: 20.0,
                 window_leak: 0.35,
-                window_wake: 1.0,
+                window_wake: 0.1,
                 motion_shed: 1.0,
                 shed_threshold: 250.0,
                 cursor_force: 1.5,
@@ -446,14 +446,14 @@ impl SnowSimulation {
                 spray_size: 1.3,
                 spray_force: 3.0,
                 ejection_force: 3.0,
-                wind_erosion_threshold: 35.0,
+                wind_erosion_threshold: 55.0,
                 wind_erosion_rate: 1.0,
-                grain_speed: 1.0,
+                grain_speed: 0.4,
                 grain_gravity: 0.9,
                 grain_random: 0.9,
                 cloud_random: 0.8,
                 cloud_accel: 0.3,
-                cloud_fade_rate: 1.0,
+                cloud_fade_rate: 0.8,
                 max_grains: 4250,
                 max_motes: 750,
                 max_effects: 5000,
@@ -604,30 +604,30 @@ impl SnowSimulation {
     fn sync_air(&mut self) {
         self.air.static_wind = self.static_wind;
         self.air.window_leak = self.window_leak;
-        self.air.window_wake = self.window_wake;
+        self.air.window_wake = self.window_wake * 0.1;
         self.air.motion_shed = self.motion_shed;
         self.air.shed_threshold = self.shed_threshold;
         self.air.cursor_force = self.cursor_force;
         self.air.speed_factor = self.speed_factor;
         self.air.sway_factor = self.sway_factor;
-        self.air.cloud_density = self.cloud_density;
-        self.air.cloud_amount = self.cloud_amount;
+        self.air.cloud_density = self.cloud_density * 0.15;
+        self.air.cloud_amount = self.cloud_amount * 1.5;
         self.air.cloud_size = self.cloud_size;
         self.air.cloud_depth_threshold = self.cloud_depth_threshold;
-        self.air.cloud_depth_scale = self.cloud_depth_scale;
-        self.air.spray_density = self.spray_density;
+        self.air.cloud_depth_scale = self.cloud_depth_scale * 1.4;
+        self.air.spray_density = (self.spray_density * 2.5).clamp(0.0, 5.0);
         self.air.spray_amount = self.spray_amount;
-        self.air.spray_size = self.spray_size;
-        self.air.spray_force = self.spray_force;
-        self.air.ejection_force = self.ejection_force;
+        self.air.spray_size = self.spray_size * 1.3;
+        self.air.spray_force = self.spray_force * 3.0;
+        self.air.ejection_force = self.ejection_force * 3.0;
         self.air.wind_erosion_threshold = self.wind_erosion_threshold;
         self.air.wind_erosion_rate = self.wind_erosion_rate;
-        self.air.grain_speed = self.grain_speed;
-        self.air.grain_gravity = self.grain_gravity;
-        self.air.grain_random = self.grain_random;
-        self.air.cloud_random = self.cloud_random;
-        self.air.cloud_accel = self.cloud_accel;
-        self.air.cloud_fade_rate = self.cloud_fade_rate;
+        self.air.grain_speed = self.grain_speed * 0.4;
+        self.air.grain_gravity = self.grain_gravity * 0.9;
+        self.air.grain_random = self.grain_random * 0.9;
+        self.air.cloud_random = self.cloud_random * 0.8;
+        self.air.cloud_accel = self.cloud_accel * 0.3;
+        self.air.cloud_fade_rate = self.cloud_fade_rate * 0.8;
         self.air.max_effects = self.max_effects;
         self.air.max_grains = (self.max_effects * 85 / 100).max(100);
         self.air.max_motes = (self.max_effects * 15 / 100).max(50);
@@ -1157,10 +1157,11 @@ impl SnowSimulation {
                 }
             }
 
-            if self.window_wake > 0.001 {
+            let window_wake = self.air.window_wake;
+            if window_wake > 0.0001 {
                 for wake in &self.active_wakes {
                     let speed = wake.velocity.length();
-                    let wake_radius = 80.0 * (0.6 + 0.4 * self.window_wake.sqrt());
+                    let wake_radius = 80.0 * (0.6 + 0.4 * window_wake.sqrt());
 
                     if flake.position.x < wake.frame.min_x() - wake_radius
                         || flake.position.x > wake.frame.max_x() + wake_radius
@@ -1178,7 +1179,7 @@ impl SnowSimulation {
                     if dist_sq < wake_radius * wake_radius {
                         let dist = dist_sq.sqrt();
                         let falloff = 1.0 - dist / wake_radius;
-                        let drag = (wake.velocity - flake.velocity) * (falloff * falloff * 5.0 * self.window_wake * dt).min(1.0);
+                        let drag = (wake.velocity - flake.velocity) * (falloff * falloff * 5.0 * window_wake * dt).min(1.0);
                         let push_dir = if dist > 0.01 {
                             diff / dist
                         } else if speed > 1.0 {
@@ -1186,7 +1187,7 @@ impl SnowSimulation {
                         } else {
                             V2::new(0.0, 1.0)
                         };
-                        let push = push_dir * (falloff * 240.0 * self.window_wake * dt);
+                        let push = push_dir * (falloff * 240.0 * window_wake * dt);
                         flake.velocity += drag + push;
                     }
                 }
@@ -1277,7 +1278,8 @@ impl SnowSimulation {
                 grain.velocity.y -= GRAVITY * global_gravity_scale * grain.gravity_scale * dt;
                 grain.velocity *= damping;
             }
-            grain.position += (grain.velocity + V2::new(flutter, 0.0)) * (global_speed_scale * dt);
+            let speed_scale = if grain.blown { 1.0 } else { global_speed_scale };
+            grain.position += (grain.velocity + V2::new(flutter, 0.0)) * (speed_scale * dt);
 
             if grain.position.x < -30.0 || grain.position.x > self.width + 30.0 {
                 self.air.grains.swap_remove(i);
@@ -1512,7 +1514,7 @@ impl SnowSimulation {
             return;
         }
 
-        let ejection = self.ejection_force;
+        let ejection = self.air.ejection_force;
         let spray_amount = self.air.spray_amount;
         let cloud_amount = self.air.cloud_amount;
 
@@ -1600,7 +1602,7 @@ impl SnowSimulation {
     /// ALL airborne snowflakes violently outwards in all directions!
     pub fn burst_all_fullscreen(&mut self) {
         let center = V2::new(self.width * 0.5, self.height * 0.5);
-        let ejection = self.ejection_force;
+        let ejection = self.air.ejection_force;
         let spray_amount = self.air.spray_amount;
         let spray_size = self.air.spray_size;
         let cloud_amount = self.air.cloud_amount;

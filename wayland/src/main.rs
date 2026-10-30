@@ -272,6 +272,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--cloud-accel" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_accel = val.clamp(0.05, 5.0);
+                    }
+                    i += 1;
+                }
+            }
+            "--cloud-fade-rate" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.cloud_fade_rate = val.clamp(0.1, 5.0);
+                    }
+                    i += 1;
+                }
+            }
             "--dynamic-weather" => {
                 config.dynamic_weather = true;
             }
@@ -319,6 +335,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      --grain-gravity <FLOAT> Physical snow grain gravity multiplier [default: 1.0]");
                 println!("      --grain-random <FLOAT> Grain trajectory, speed and gravity randomness [default: 1.0]");
                 println!("      --cloud-random <FLOAT> Cloud mote trajectory, speed and gravity randomness [default: 1.0]");
+                println!("      --cloud-accel <FLOAT> Cloud mote acceleration and kinetic speed multiplier [default: 1.0]");
+                println!("      --cloud-fade-rate <FLOAT> Cloud mote decay and dissipation speed multiplier [default: 1.0]");
                 println!("      --dynamic-weather     Enable dynamic weather cycles (wind, speed, density)");
                 println!("      --weather-mode <MODE> Weather mode: auto, calm, breeze, blizzard, squall, thaw [default: auto]");
                 println!("      --weather-speed <FLOAT> Dynamic weather cycle speed multiplier [default: 1.0]");

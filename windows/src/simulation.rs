@@ -269,6 +269,8 @@ struct Air {
     pub grain_gravity: f32,
     pub grain_random: f32,
     pub cloud_random: f32,
+    pub cloud_accel: f32,
+    pub cloud_fade_rate: f32,
     cursor: Option<V2>,
     cursor_velocity: V2,
     held_layers: Vec<usize>,
@@ -318,6 +320,8 @@ pub struct SnowSimulation {
     pub grain_gravity: f32,
     pub grain_random: f32,
     pub cloud_random: f32,
+    pub cloud_accel: f32,
+    pub cloud_fade_rate: f32,
     pub motion_blur: f32,
     pub accumulates: bool,
     pub no_fullscreen_snow: bool,
@@ -384,6 +388,8 @@ impl SnowSimulation {
             grain_gravity: 1.0,
             grain_random: 1.0,
             cloud_random: 1.0,
+            cloud_accel: 1.0,
+            cloud_fade_rate: 1.0,
             motion_blur: 1.0,
             accumulates: true,
             no_fullscreen_snow: false,
@@ -433,6 +439,8 @@ impl SnowSimulation {
                 grain_gravity: 1.0,
                 grain_random: 1.0,
                 cloud_random: 1.0,
+                cloud_accel: 1.0,
+                cloud_fade_rate: 1.0,
                 cursor: None,
                 cursor_velocity: V2::ZERO,
                 held_layers: Vec::new(),
@@ -600,6 +608,8 @@ impl SnowSimulation {
         self.air.grain_gravity = self.grain_gravity;
         self.air.grain_random = self.grain_random;
         self.air.cloud_random = self.cloud_random;
+        self.air.cloud_accel = self.cloud_accel;
+        self.air.cloud_fade_rate = self.cloud_fade_rate;
     }
 
     /// Returns whether anything visible changed.
@@ -1223,7 +1233,7 @@ impl SnowSimulation {
             let previous_y = grain.position.y;
             let damping = (-GRAIN_DRAG * grain.drag_scale * dt).exp();
             grain.sway_phase += grain.sway_rate * dt;
-            let flutter = grain.sway_phase.sin() * (12.0 * grain.gravity_scale.min(1.2));
+            let flutter = grain.sway_phase.sin() * (24.0 * grain.drag_scale) * self.air.grain_random.min(2.5);
 
             if grain.blown {
                 // Powder carried by wind during workspace switch or gust:
@@ -1544,8 +1554,8 @@ impl SnowSimulation {
                                 let r = &mut self.air.random;
                                 let vx = wind_dir * r.range(150.0, 480.0) * ejection + r.range(-15.0, 15.0);
                                 let vy = r.range(30.0, 160.0) * ejection;
-                                let sz = r.range(12.0, 28.0) * self.air.cloud_size;
-                                let al = (r.range(0.12, 0.28) * self.air.cloud_density).clamp(0.0, 1.0);
+                                let sz = r.range(14.0, 30.0);
+                                let al = r.range(0.35, 0.65);
                                 let life = r.range(0.6, 1.5);
                                 (V2::new(x, surface), V2::new(vx, vy), sz, al, life)
                             };
@@ -1567,8 +1577,8 @@ impl SnowSimulation {
         let spray_amount = self.air.spray_amount;
         let spray_size = self.air.spray_size;
         let cloud_amount = self.air.cloud_amount;
-        let cloud_size = self.air.cloud_size;
-        let cloud_density = self.air.cloud_density;
+        let _cloud_size = self.air.cloud_size;
+        let _cloud_density = self.air.cloud_density;
 
         // 1. Violent blast of ALL snowdrifts on ALL layers (ground layer 0 + all window ledges + dormant)
         for layer in &mut self.layers {
@@ -1617,8 +1627,8 @@ impl SnowSimulation {
                         let speed = r.range(160.0, 520.0) * ejection;
                         let vx = outward.x * speed + r.range(-60.0, 60.0);
                         let vy = (outward.y.abs() * speed * 0.75 + r.range(90.0, 360.0)).min(750.0);
-                        let sz = r.range(24.0, 56.0) * cloud_size;
-                        let al = (r.range(0.25, 0.55) * cloud_density).clamp(0.0, 1.0);
+                        let sz = r.range(24.0, 56.0);
+                        let al = r.range(0.40, 0.75);
                         let life = r.range(0.9, 2.2);
                         (V2::new(x, surface), V2::new(vx, vy), sz, al, life)
                     };
@@ -2394,7 +2404,7 @@ impl Air {
                 let mote_vx = dir * r.range(speed * 0.45, speed * 0.95) + r.range(-20.0, 20.0);
                 let mote_vy = r.range(40.0, 160.0);
                 let pos = origin + V2::new(r.range(-5.0, 5.0), r.range(0.0, 8.0));
-                let sz = r.range(22.0, 48.0) * self.cloud_size.max(0.7);
+                let sz = r.range(22.0, 48.0);
                 let al = r.range(0.40, 0.70);
                 let life = r.range(0.6, 1.4);
                 (pos, V2::new(mote_vx, mote_vy), sz, al, life)
@@ -2528,30 +2538,31 @@ impl Air {
         }
         let drift = self.wind_speed() * 0.45;
         let clock = self.clock as f32;
+        let accel = self.cloud_accel.clamp(0.05, 5.0);
+        let fade_rate = self.cloud_fade_rate.clamp(0.1, 5.0);
         let mut i = self.motes.len();
         while i > 0 {
             i -= 1;
             let mote = &mut self.motes[i];
-            mote.age += dt;
+            mote.age += dt * fade_rate;
             if mote.age >= mote.life {
                 self.motes.swap_remove(i);
             } else {
                 let progress = (mote.age / mote.life).clamp(0.0, 1.0);
-                let damping = (-3.8 * mote.drag_scale * dt).exp();
+                let damping = (-3.2 * mote.drag_scale * dt).exp();
                 mote.flutter_phase += mote.flutter_rate * dt;
 
-                // Buoyancy vs gravity: randomized per mote.
-                // Light motes (low gravity_scale) rise more and linger; heavy motes drop sooner.
-                let lift = (1.0 - progress * (1.6 * mote.gravity_scale)).max(-0.8) * (14.0 * (1.8 - mote.gravity_scale.min(1.4)));
-                let gravity_pull = 6.0 * mote.gravity_scale;
+                // Bold buoyancy vs gravity:
+                let lift = (1.0 - progress * (1.3 * mote.gravity_scale)).max(-1.0) * (36.0 * (1.8 - mote.gravity_scale.min(1.5))) * accel;
+                let gravity_pull = 20.0 * mote.gravity_scale * accel;
                 mote.velocity.y += (lift - gravity_pull) * dt;
                 mote.velocity *= damping;
 
                 // Swirling, billowing trajectory curl & turbulence:
                 let wave = mote.flutter_phase.sin();
-                let curl_x = -wave * mote.curl * (1.0 - progress);
-                let curl_y = (mote.flutter_phase * 1.3).cos() * (mote.curl * 0.5) * (1.0 - progress);
-                let turbulence = ((mote.position.y * 0.04 + clock * 2.2 + mote.flutter_phase).sin() * 14.0) * (1.0 - progress);
+                let curl_x = -wave * mote.curl * (1.0 - progress) * accel;
+                let curl_y = (mote.flutter_phase * 1.3).cos() * (mote.curl * 0.6) * (1.0 - progress) * accel;
+                let turbulence = ((mote.position.y * 0.04 + clock * 2.2 + mote.flutter_phase).sin() * 22.0) * (1.0 - progress) * accel;
 
                 mote.position += (mote.velocity + V2::new(drift + turbulence + curl_x, curl_y)) * dt;
             }
@@ -2568,18 +2579,19 @@ impl Air {
         blown: bool,
     ) -> Grain {
         let r = &mut self.random;
-        let gr = self.grain_random.clamp(0.0, 3.0);
-        let speed_mult = 1.0 + r.range(-0.18, 0.20) * gr;
-        let angle_jitter = r.range(-0.14, 0.14) * gr;
+        let gr = self.grain_random.clamp(0.0, 5.0);
+        let speed_spread = 0.40 * gr;
+        let speed_mult = (1.0 + r.range(-speed_spread, speed_spread * 1.5)).clamp(0.2, 4.0);
+        let angle_jitter = r.range(-0.45, 0.45) * gr.min(2.5);
         let (sin_a, cos_a) = angle_jitter.sin_cos();
         let rotated_vel = V2::new(
             (velocity.x * cos_a - velocity.y * sin_a) * speed_mult,
             (velocity.x * sin_a + velocity.y * cos_a) * speed_mult,
         );
-        let grav_offset = r.range(-0.35, 0.45) * gr;
-        let drag_offset = r.range(-0.25, 0.35) * gr;
+        let grav_offset = r.range(-0.65, 0.95) * gr;
+        let drag_offset = r.range(-0.35, 0.55) * gr;
         let sway_phase = r.range(0.0, 6.28);
-        let sway_rate = (2.0 + r.range(0.0, 5.0)) * gr;
+        let sway_rate = (2.5 + r.range(1.0, 8.0)) * (0.5 + 0.5 * gr);
         Grain {
             position,
             velocity: rotated_vel,
@@ -2587,8 +2599,8 @@ impl Air {
             size,
             lump,
             blown,
-            gravity_scale: (1.0 + grav_offset).clamp(0.2, 2.5),
-            drag_scale: (1.0 + drag_offset).clamp(0.3, 2.5),
+            gravity_scale: (1.0 + grav_offset).clamp(0.2, 3.5),
+            drag_scale: (1.0 + drag_offset).clamp(0.3, 3.0),
             sway_phase,
             sway_rate,
         }
@@ -2603,27 +2615,31 @@ impl Air {
         life: f32,
     ) -> Mote {
         let r = &mut self.random;
-        let cr = self.cloud_random.clamp(0.0, 3.0);
-        let speed_mult = 1.0 + r.range(-0.20, 0.24) * cr;
-        let angle_jitter = r.range(-0.20, 0.20) * cr;
+        let cr = self.cloud_random.clamp(0.0, 5.0);
+        let speed_spread = 0.45 * cr;
+        let speed_mult = (1.0 + r.range(-speed_spread, speed_spread * 1.4)).clamp(0.15, 4.0);
+        let accel = self.cloud_accel.clamp(0.05, 5.0);
+        let angle_jitter = r.range(-0.55, 0.55) * cr.min(2.8);
         let (sin_a, cos_a) = angle_jitter.sin_cos();
         let rotated_vel = V2::new(
-            (velocity.x * cos_a - velocity.y * sin_a) * speed_mult,
-            (velocity.x * sin_a + velocity.y * cos_a) * speed_mult,
+            (velocity.x * cos_a - velocity.y * sin_a) * speed_mult * accel,
+            (velocity.x * sin_a + velocity.y * cos_a) * speed_mult * accel,
         );
-        let grav_offset = r.range(-0.50, 0.55) * cr;
-        let drag_offset = r.range(-0.25, 0.35) * cr;
-        let curl = r.range(-16.0, 16.0) * cr;
-        let flutter_rate = (1.5 + r.range(0.0, 3.5)) * cr;
+        let size_var = (1.0 + r.range(-0.35, 0.55) * cr.min(2.0)).clamp(0.35, 2.5);
+        let life_var = (1.0 + r.range(-0.30, 0.45) * cr.min(2.0)).clamp(0.35, 2.2);
+        let grav_offset = r.range(-0.75, 1.25) * cr;
+        let drag_offset = r.range(-0.40, 0.60) * cr;
+        let curl = r.range(-60.0, 60.0) * cr;
+        let flutter_rate = (1.8 + r.range(0.5, 6.5)) * (0.5 + 0.5 * cr);
         Mote {
             position,
             velocity: rotated_vel,
-            size,
+            size: size * size_var,
             alpha,
             age: 0.0,
-            life,
-            gravity_scale: (1.0 + grav_offset).clamp(0.2, 2.5),
-            drag_scale: (1.0 + drag_offset).clamp(0.3, 2.5),
+            life: life * life_var,
+            gravity_scale: (1.0 + grav_offset).clamp(0.1, 4.0),
+            drag_scale: (1.0 + drag_offset).clamp(0.2, 3.5),
             flutter_phase: r.range(0.0, 6.28),
             flutter_rate,
             curl,
@@ -2721,8 +2737,8 @@ impl Air {
             let (pos, vel, sz, al, life) = {
                 let r = &mut self.random;
                 let vel = V2::new(direction * r.range(200.0, 600.0) * ejection, r.range(20.0, 120.0) * ejection);
-                let sz = r.range(8.0, 18.0) * self.cloud_size;
-                let al = (r.range(0.08, 0.20) * self.cloud_density).clamp(0.0, 1.0);
+                let sz = r.range(12.0, 24.0);
+                let al = r.range(0.30, 0.60);
                 let life = r.range(0.6, 1.3);
                 (position, vel, sz, al, life)
             };

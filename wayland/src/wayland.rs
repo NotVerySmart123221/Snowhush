@@ -66,6 +66,8 @@ pub struct AppConfig {
     pub grain_gravity: f32,
     pub grain_random: f32,
     pub cloud_random: f32,
+    pub cloud_accel: f32,
+    pub cloud_fade_rate: f32,
     pub dynamic_weather: bool,
     pub weather_mode: String,
     pub weather_cycle_speed: f32,
@@ -108,6 +110,8 @@ impl Default for AppConfig {
             grain_gravity: 1.0,
             grain_random: 1.0,
             cloud_random: 1.0,
+            cloud_accel: 1.0,
+            cloud_fade_rate: 1.0,
             dynamic_weather: false,
             weather_mode: "auto".to_string(),
             weather_cycle_speed: 1.0,
@@ -179,6 +183,10 @@ pub struct JsonConfig {
     pub grain_random: f32,
     #[serde(default = "default_one")]
     pub cloud_random: f32,
+    #[serde(default = "default_one")]
+    pub cloud_accel: f32,
+    #[serde(default = "default_one")]
+    pub cloud_fade_rate: f32,
     #[serde(default = "default_false")]
     pub dynamic_weather: bool,
     #[serde(default = "default_weather_mode")]
@@ -262,6 +270,8 @@ impl JsonConfig {
             grain_gravity: cfg.grain_gravity,
             grain_random: cfg.grain_random,
             cloud_random: cfg.cloud_random,
+            cloud_accel: cfg.cloud_accel,
+            cloud_fade_rate: cfg.cloud_fade_rate,
             dynamic_weather: cfg.dynamic_weather,
             weather_mode: cfg.weather_mode.clone(),
             weather_cycle_speed: cfg.weather_cycle_speed,
@@ -312,6 +322,8 @@ impl JsonConfig {
             grain_gravity: self.grain_gravity.clamp(0.05, 5.0),
             grain_random: self.grain_random.clamp(0.0, 5.0),
             cloud_random: self.cloud_random.clamp(0.0, 5.0),
+            cloud_accel: self.cloud_accel.clamp(0.05, 5.0),
+            cloud_fade_rate: self.cloud_fade_rate.clamp(0.1, 5.0),
             dynamic_weather: self.dynamic_weather,
             weather_mode: self.weather_mode.clone(),
             weather_cycle_speed: self.weather_cycle_speed.clamp(0.1, 5.0),
@@ -530,6 +542,8 @@ impl SnowhushApp {
         self.simulation.grain_gravity = new_cfg.grain_gravity;
         self.simulation.grain_random = new_cfg.grain_random;
         self.simulation.cloud_random = new_cfg.cloud_random;
+        self.simulation.cloud_accel = new_cfg.cloud_accel;
+        self.simulation.cloud_fade_rate = new_cfg.cloud_fade_rate;
         self.simulation.no_fullscreen_snow = new_cfg.no_fullscreen_snow;
         self.simulation.configure_weather(new_cfg.dynamic_weather, &new_cfg.weather_mode, new_cfg.weather_cycle_speed);
         self.tracker.update_config(TrackerConfig {

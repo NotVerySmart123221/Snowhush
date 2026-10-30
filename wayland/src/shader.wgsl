@@ -60,7 +60,7 @@ fn sprite_vertex(
         streak = normalize(travel) * smear * uniforms.scale;
     }
     // Generous quad reach for soft Gaussian-like cloud motes so alpha decays to 0.0 well inside the quad
-    let reach = select(select(1.05, 1.35, sprite.lump > 0.0), 1.35, is_cloud);
+    let reach = select(select(1.05, 1.35, sprite.lump > 0.0), 1.45, is_cloud);
     let extent = max(pixels * reach + length(streak), 2.0);
     let corner = vec2<f32>(f32(vid & 1u), f32(vid >> 1u));
     

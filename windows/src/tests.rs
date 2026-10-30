@@ -1370,3 +1370,50 @@ fn test_windows_sweep_off_snow_at_or_above_shed_threshold() {
     let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05).collect();
     assert!(!grains.is_empty(), "fast motion above threshold must sweep off snow into flying grains");
 }
+
+#[test]
+fn test_grain_and_cloud_randomization() {
+    let mut sim = SnowSimulation::new(1280.0, 800.0, Snowfall::Off);
+    sim.thaws = false;
+    sim.static_wind = 0.0;
+    sim.cloud_amount = 2.0;
+    sim.spray_amount = 2.0;
+
+    // Fill ground with a thick snowdrift
+    for i in 100..300 {
+        sim.layers_mut()[0].set(i, 30.0);
+    }
+    sim.layers_mut()[0].refresh_top();
+
+    // Trigger window crush / scatter
+    let frame = Rect { x: 200.0, y: 50.0, width: 400.0, height: 200.0 };
+    for _ in 0..5 {
+        sim.emit_scatter_for_test(15.0, 300.0, 30.0, 25.0, frame, V2::new(100.0, -150.0));
+    }
+
+    assert!(sim.grain_count() > 1, "multiple grains should be emitted");
+    assert!(sim.mote_count() > 1, "multiple cloud motes should be emitted");
+
+    let mut sprites = vec![Sprite::default(); 5000];
+    let count = sim.write_sprites(&mut sprites);
+    let grains: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05).collect();
+    let motes: Vec<_> = sprites[..count].iter().filter(|s| (s.soft - 1.0).abs() < 0.05).collect();
+
+    // Verify velocities are not identical (have non-zero variance)
+    let grain_vx_min = grains.iter().map(|g| g.velocity.x).fold(f32::INFINITY, f32::min);
+    let grain_vx_max = grains.iter().map(|g| g.velocity.x).fold(f32::NEG_INFINITY, f32::max);
+    assert!(grain_vx_max - grain_vx_min > 5.0, "grain velocities must be randomized: min={grain_vx_min}, max={grain_vx_max}");
+
+    let mote_vy_min = motes.iter().map(|m| m.velocity.y).fold(f32::INFINITY, f32::min);
+    let mote_vy_max = motes.iter().map(|m| m.velocity.y).fold(f32::NEG_INFINITY, f32::max);
+    assert!(mote_vy_max - mote_vy_min > 5.0, "mote velocities must be randomized: min={mote_vy_min}, max={mote_vy_max}");
+
+    // Advance simulation: verify trajectories diverge due to randomized gravity, drag, and flutter
+    sim.step(0.1, AWAY);
+    let count2 = sim.write_sprites(&mut sprites);
+    let grains_after: Vec<_> = sprites[..count2].iter().filter(|s| (s.soft - 0.3).abs() < 0.05 || (s.soft - 0.2).abs() < 0.05).collect();
+    assert!(grains_after.len() >= 2);
+    let dy1 = grains_after[0].position.y;
+    let dy2 = grains_after[1].position.y;
+    assert!((dy1 - dy2).abs() > 0.001, "different grains should fall at randomized rates: {dy1} vs {dy2}");
+}

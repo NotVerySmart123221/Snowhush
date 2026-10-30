@@ -173,6 +173,14 @@ struct Grain {
     lump: f32,
     /// Powder carried off by a gust: it rides the wind off the screen instead of settling.
     blown: bool,
+    /// Individual randomized gravity multiplier
+    gravity_scale: f32,
+    /// Individual randomized aerodynamic drag multiplier
+    drag_scale: f32,
+    /// Individual trajectory oscillation phase
+    sway_phase: f32,
+    /// Individual trajectory oscillation rate
+    sway_rate: f32,
 }
 
 /// Powder thrown up by a lump bursting: it billows, slows in the air and fades without settling.
@@ -184,6 +192,16 @@ struct Mote {
     alpha: f32,
     age: f32,
     life: f32,
+    /// Individual randomized gravity/buoyancy multiplier
+    gravity_scale: f32,
+    /// Individual randomized aerodynamic resistance
+    drag_scale: f32,
+    /// Trajectory fluttering phase
+    flutter_phase: f32,
+    /// Trajectory fluttering rate
+    flutter_rate: f32,
+    /// Trajectory curl/swirl magnitude
+    curl: f32,
 }
 
 pub struct Random(pub u64);
@@ -669,6 +687,7 @@ impl SnowSimulation {
             let alpha = (mote.alpha * fade_in * fade_out * cloud_density).clamp(0.0, 1.0);
             Sprite {
                 position: mote.position,
+                velocity: mote.velocity,
                 size: mote.size * expansion * cloud_size,
                 alpha,
                 soft: 1.0,
@@ -1180,30 +1199,33 @@ impl SnowSimulation {
         if self.air.grains.is_empty() {
             return;
         }
-        let damping = (-GRAIN_DRAG * dt).exp();
-        let gravity_scale = self.air.grain_gravity;
-        let speed_scale = self.air.grain_speed;
+        let global_gravity_scale = self.air.grain_gravity;
+        let global_speed_scale = self.air.grain_speed;
         let mut i = self.air.grains.len();
         while i > 0 {
             i -= 1;
             let mut grain = self.air.grains[i];
             let previous_y = grain.position.y;
+            let damping = (-GRAIN_DRAG * grain.drag_scale * dt).exp();
+            grain.sway_phase += grain.sway_rate * dt;
+            let flutter = grain.sway_phase.sin() * (12.0 * grain.gravity_scale.min(1.2));
+
             if grain.blown {
                 // Powder carried by wind during workspace switch or gust:
                 // Rather than rocketing away infinitely off-screen, it rides the wind wave,
                 // and naturally decelerates and settles back under gravity.
                 let wind = self.air.wind_speed();
-                let target_speed = wind * (0.8 + 0.2 * self.workspace_sweep.min(2.0));
-                grain.velocity.x += (target_speed - grain.velocity.x) * (dt * 2.5).min(1.0);
-                grain.velocity.y -= GRAVITY * 0.28 * gravity_scale * dt;
+                let target_speed = wind * (0.75 + 0.35 * grain.drag_scale) * (0.8 + 0.2 * self.workspace_sweep.min(2.0));
+                grain.velocity.x += (target_speed - grain.velocity.x) * (dt * (2.0 + grain.drag_scale)).min(1.0);
+                grain.velocity.y -= GRAVITY * 0.28 * global_gravity_scale * grain.gravity_scale * dt;
                 if grain.velocity.x.abs() < 80.0 && self.air.clock >= self.workspace_transition_until {
                     grain.blown = false;
                 }
             } else {
-                grain.velocity.y -= GRAVITY * gravity_scale * dt;
+                grain.velocity.y -= GRAVITY * global_gravity_scale * grain.gravity_scale * dt;
                 grain.velocity *= damping;
             }
-            grain.position += grain.velocity * (speed_scale * dt);
+            grain.position += (grain.velocity + V2::new(flutter, 0.0)) * (global_speed_scale * dt);
 
             if grain.position.x < -30.0 || grain.position.x > self.width + 30.0 {
                 self.air.grains.swap_remove(i);
@@ -1489,32 +1511,31 @@ impl SnowSimulation {
                         // Ejection / kickback probability scaled by loss and ejection force
                         let lift_prob = (loss * 14.0 * ejection * spray_amount).min(0.75);
                         if self.air.random.next() < lift_prob && self.air.grains.len() < MAX_GRAINS {
-                            let r = &mut self.air.random;
-                            let vx = wind_dir * r.range(320.0, 950.0) * ejection + r.range(-20.0, 20.0);
-                            let vy = r.range(40.0, 280.0) * ejection;
-                            self.air.grains.push(Grain {
-                                position: V2::new(x + r.range(-1.5, 1.5), surface + r.range(-1.0, 2.0)),
-                                velocity: V2::new(vx, vy),
-                                area: 0.0,
-                                size: r.range(1.1, 2.8) * self.air.spray_size,
-                                lump: 0.0,
-                                blown: true,
-                            });
+                            let (pos, vel, sz) = {
+                                let r = &mut self.air.random;
+                                let vx = wind_dir * r.range(320.0, 950.0) * ejection + r.range(-20.0, 20.0);
+                                let vy = r.range(40.0, 280.0) * ejection;
+                                let pos = V2::new(x + r.range(-1.5, 1.5), surface + r.range(-1.0, 2.0));
+                                let sz = r.range(1.1, 2.8) * self.air.spray_size;
+                                (pos, V2::new(vx, vy), sz)
+                            };
+                            let grain = self.air.make_grain(pos, vel, 0.0, sz, 0.0, true);
+                            self.air.grains.push(grain);
                         }
 
                         let mote_prob = (loss * 7.0 * ejection * cloud_amount).min(0.45);
                         if self.air.random.next() < mote_prob && self.air.motes.len() < MAX_MOTES {
-                            let r = &mut self.air.random;
-                            let vx = wind_dir * r.range(150.0, 480.0) * ejection + r.range(-15.0, 15.0);
-                            let vy = r.range(30.0, 160.0) * ejection;
-                            self.air.motes.push(Mote {
-                                position: V2::new(x, surface),
-                                velocity: V2::new(vx, vy),
-                                size: r.range(12.0, 28.0) * self.air.cloud_size,
-                                alpha: (r.range(0.12, 0.28) * self.air.cloud_density).clamp(0.0, 1.0),
-                                age: 0.0,
-                                life: r.range(0.6, 1.5),
-                            });
+                            let (pos, vel, sz, al, life) = {
+                                let r = &mut self.air.random;
+                                let vx = wind_dir * r.range(150.0, 480.0) * ejection + r.range(-15.0, 15.0);
+                                let vy = r.range(30.0, 160.0) * ejection;
+                                let sz = r.range(12.0, 28.0) * self.air.cloud_size;
+                                let al = (r.range(0.12, 0.28) * self.air.cloud_density).clamp(0.0, 1.0);
+                                let life = r.range(0.6, 1.5);
+                                (V2::new(x, surface), V2::new(vx, vy), sz, al, life)
+                            };
+                            let mote = self.air.make_mote(pos, vel, sz, al, life);
+                            self.air.motes.push(mote);
                         }
                     }
                 }
@@ -1560,34 +1581,34 @@ impl SnowSimulation {
                     if self.air.grains.len() >= MAX_GRAINS {
                         break;
                     }
-                    let r = &mut self.air.random;
-                    let speed = r.range(300.0, 900.0) * ejection;
-                    let vx = outward.x * speed + r.range(-90.0, 90.0);
-                    let vy = (outward.y.abs() * speed * 0.85 + r.range(150.0, 550.0)).min(1100.0);
-                    self.air.grains.push(Grain {
-                        position: V2::new(x + r.range(-2.0, 2.0), surface + r.range(0.0, 5.0)),
-                        velocity: V2::new(vx, vy),
-                        area: 1.5,
-                        size: (r.range(1.5, 4.0) * spray_size).clamp(1.0, 6.5),
-                        lump: if r.next() > 0.5 { 1.0 } else { 0.0 },
-                        blown: true,
-                    });
+                    let (pos, vel, sz, lump) = {
+                        let r = &mut self.air.random;
+                        let speed = r.range(300.0, 900.0) * ejection;
+                        let vx = outward.x * speed + r.range(-90.0, 90.0);
+                        let vy = (outward.y.abs() * speed * 0.85 + r.range(150.0, 550.0)).min(1100.0);
+                        let pos = V2::new(x + r.range(-2.0, 2.0), surface + r.range(0.0, 5.0));
+                        let sz = (r.range(1.5, 4.0) * spray_size).clamp(1.0, 6.5);
+                        let lump = if r.next() > 0.5 { 1.0 } else { 0.0 };
+                        (pos, V2::new(vx, vy), sz, lump)
+                    };
+                    let grain = self.air.make_grain(pos, vel, 1.5, sz, lump, true);
+                    self.air.grains.push(grain);
                 }
 
                 // Blast outward billowing cloud motes
                 if self.air.random.next() < (0.45 * cloud_amount).min(0.95) && self.air.motes.len() < MAX_MOTES {
-                    let r = &mut self.air.random;
-                    let speed = r.range(160.0, 520.0) * ejection;
-                    let vx = outward.x * speed + r.range(-60.0, 60.0);
-                    let vy = (outward.y.abs() * speed * 0.75 + r.range(90.0, 360.0)).min(750.0);
-                    self.air.motes.push(Mote {
-                        position: V2::new(x, surface),
-                        velocity: V2::new(vx, vy),
-                        size: r.range(24.0, 56.0) * cloud_size,
-                        alpha: (r.range(0.25, 0.55) * cloud_density).clamp(0.0, 1.0),
-                        age: 0.0,
-                        life: r.range(0.9, 2.2),
-                    });
+                    let (pos, vel, sz, al, life) = {
+                        let r = &mut self.air.random;
+                        let speed = r.range(160.0, 520.0) * ejection;
+                        let vx = outward.x * speed + r.range(-60.0, 60.0);
+                        let vy = (outward.y.abs() * speed * 0.75 + r.range(90.0, 360.0)).min(750.0);
+                        let sz = r.range(24.0, 56.0) * cloud_size;
+                        let al = (r.range(0.25, 0.55) * cloud_density).clamp(0.0, 1.0);
+                        let life = r.range(0.9, 2.2);
+                        (V2::new(x, surface), V2::new(vx, vy), sz, al, life)
+                    };
+                    let mote = self.air.make_mote(pos, vel, sz, al, life);
+                    self.air.motes.push(mote);
                 }
             }
             layer.refresh_top();
@@ -2082,23 +2103,25 @@ impl Air {
                 let right = ledge.center_x(end - 1);
                 let mote_y = if velocity.y > 40.0 { highest + 2.0 } else { (lowest + highest) * 0.5 };
                 let center = V2::new((left + right) * 0.5, mote_y);
-                let mote_v = if velocity.y > 40.0 {
-                    let rel_x = ((center.x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
-                    let side_boost = rel_x * (velocity.y * 0.3).clamp(30.0, 260.0) + self.random.range(-20.0, 20.0);
-                    let up_boost = velocity.y * self.random.range(0.5, 0.8) + self.random.range(30.0, 90.0);
-                    V2::new(velocity.x * 0.5 + side_boost, up_boost)
-                } else {
-                    let speed = velocity.length();
-                    velocity * 0.5 + V2::new(self.random.range(-30.0, 30.0), self.random.range(20.0, 90.0) + speed * 0.05)
+                let (pos, mote_v, sz, al, life) = {
+                    let r = &mut self.random;
+                    let mote_v = if velocity.y > 40.0 {
+                        let rel_x = ((center.x - ledge_center_x) / half_w).clamp(-1.0, 1.0);
+                        let side_boost = rel_x * (velocity.y * 0.3).clamp(30.0, 260.0) + r.range(-20.0, 20.0);
+                        let up_boost = velocity.y * r.range(0.5, 0.8) + r.range(30.0, 90.0);
+                        V2::new(velocity.x * 0.5 + side_boost, up_boost)
+                    } else {
+                        let speed = velocity.length();
+                        velocity * 0.5 + V2::new(r.range(-30.0, 30.0), r.range(20.0, 90.0) + speed * 0.05)
+                    };
+                    let pos = center + V2::new(r.range(-5.0, 5.0), r.range(-2.0, 4.0));
+                    let sz = r.range(8.0, 18.0);
+                    let al = r.range(0.08, 0.2);
+                    let life = r.range(0.5, 1.2);
+                    (pos, mote_v, sz, al, life)
                 };
-                self.motes.push(Mote {
-                    position: center + V2::new(self.random.range(-5.0, 5.0), self.random.range(-2.0, 4.0)),
-                    velocity: mote_v,
-                    size: self.random.range(8.0, 18.0),
-                    alpha: self.random.range(0.08, 0.2),
-                    age: 0.0,
-                    life: self.random.range(0.5, 1.2),
-                });
+                let mote = self.make_mote(pos, mote_v, sz, al, life);
+                self.motes.push(mote);
             }
             start = end;
         }
@@ -2112,26 +2135,26 @@ impl Air {
             if self.grains.len() >= MAX_GRAINS {
                 break;
             }
-            let random = &mut self.random;
-            let (vx, vy) = if velocity.y > 40.0 {
-                (
-                    velocity.x * (1.0 + random.range(-0.15, 0.15)) + random.range(-25.0, 25.0),
-                    velocity.y * (1.0 + random.range(-0.1, 0.2)) + random.range(10.0, 40.0),
-                )
-            } else {
-                (
-                    velocity.x * (1.0 + random.range(-0.2, 0.2)) + random.range(-25.0, 25.0),
-                    velocity.y * (1.0 + random.range(-0.2, 0.2)) + random.range(-80.0, 0.0),
-                )
+            let (pos, vel, sz, lump) = {
+                let r = &mut self.random;
+                let (vx, vy) = if velocity.y > 40.0 {
+                    (
+                        velocity.x * (1.0 + r.range(-0.15, 0.15)) + r.range(-25.0, 25.0),
+                        velocity.y * (1.0 + r.range(-0.1, 0.2)) + r.range(10.0, 40.0),
+                    )
+                } else {
+                    (
+                        velocity.x * (1.0 + r.range(-0.2, 0.2)) + r.range(-25.0, 25.0),
+                        velocity.y * (1.0 + r.range(-0.2, 0.2)) + r.range(-80.0, 0.0),
+                    )
+                };
+                let pos = position + V2::new(r.range(-2.0, 2.0), r.range(-1.0, 1.0));
+                let sz = (share.sqrt() * 1.05).min(11.0);
+                let lump = r.range(0.05, 1.0);
+                (pos, V2::new(vx, vy), sz, lump)
             };
-            self.grains.push(Grain {
-                position: position + V2::new(random.range(-2.0, 2.0), random.range(-1.0, 1.0)),
-                velocity: V2::new(vx, vy),
-                area: share,
-                size: (share.sqrt() * 1.05).min(11.0),
-                lump: random.range(0.05, 1.0),
-                blown: false,
-            });
+            let grain = self.make_grain(pos, vel, share, sz, lump, false);
+            self.grains.push(grain);
         }
     }
 
@@ -2151,17 +2174,19 @@ impl Air {
 
         let count = MAX_MOTES.saturating_sub(self.motes.len()).min((2.0 + lump.size * 0.6 * force) as usize);
         for _ in 0..count {
-            let random = &mut self.random;
-            let angle = random.range(0.15, PI - 0.15);
-            let speed = random.range(25.0, 110.0) * force;
-            self.motes.push(Mote {
-                position: V2::new(lump.position.x + random.range(-0.5, 0.5) * lump.size, surface + random.range(0.0, lump.size * 0.4)),
-                velocity: V2::new(angle.cos() * speed * 1.4 + lump.velocity.x * 0.2, angle.sin() * speed * 0.6),
-                size: random.range(0.3, 0.6) * lump.size + 1.0,
-                alpha: random.range(0.1, 0.22),
-                age: 0.0,
-                life: random.range(0.45, 0.9),
-            });
+            let (pos, vel, sz, al, life) = {
+                let r = &mut self.random;
+                let angle = r.range(0.15, PI - 0.15);
+                let speed = r.range(25.0, 110.0) * force;
+                let pos = V2::new(lump.position.x + r.range(-0.5, 0.5) * lump.size, surface + r.range(0.0, lump.size * 0.4));
+                let vel = V2::new(angle.cos() * speed * 1.4 + lump.velocity.x * 0.2, angle.sin() * speed * 0.6);
+                let sz = r.range(0.3, 0.6) * lump.size + 1.0;
+                let al = r.range(0.1, 0.22);
+                let life = r.range(0.45, 0.9);
+                (pos, vel, sz, al, life)
+            };
+            let mote = self.make_mote(pos, vel, sz, al, life);
+            self.motes.push(mote);
         }
     }
 
@@ -2178,16 +2203,16 @@ impl Air {
         let count = room.min(((area / 3.0) as usize).clamp(1, 6));
         let share = area / count as f32;
         for _ in 0..count {
-            let random = &mut self.random;
-            let jitter = V2::new(random.range(-12.0, 12.0) - 40.0 * scatter * random.range(-1.0, 1.0), random.range(-10.0, 8.0));
-            self.grains.push(Grain {
-                position: position + V2::new(random.range(-spread.x, spread.x), random.range(0.0, spread.y)),
-                velocity: velocity * (1.0 + random.range(-scatter, scatter)) + jitter,
-                area: share,
-                size: (share.sqrt() * 1.05).clamp(1.1, 5.0),
-                lump: 0.0,
-                blown: false,
-            });
+            let (pos, vel, sz) = {
+                let r = &mut self.random;
+                let jitter = V2::new(r.range(-12.0, 12.0) - 40.0 * scatter * r.range(-1.0, 1.0), r.range(-10.0, 8.0));
+                let pos = position + V2::new(r.range(-spread.x, spread.x), r.range(0.0, spread.y));
+                let vel = velocity * (1.0 + r.range(-scatter, scatter)) + jitter;
+                let sz = (share.sqrt() * 1.05).clamp(1.1, 5.0);
+                (pos, vel, sz)
+            };
+            let grain = self.make_grain(pos, vel, share, sz, 0.0, false);
+            self.grains.push(grain);
         }
     }
 
@@ -2285,34 +2310,34 @@ impl Air {
         let outward = if length > 0.001 { offset / length } else { V2::new(0.0, 1.0) };
 
         for _ in 0..count {
-            let random = &mut self.random;
-            let mut v = velocity * random.range(0.55, 1.25) + outward * (speed * random.range(0.05, 0.25));
-            v.y += speed * random.range(0.02, 0.2);
-            v += V2::new(random.range(-30.0, 30.0), random.range(-20.0, 40.0));
-            self.grains.push(Grain {
-                position: origin + V2::new(random.range(-1.0, 1.0), random.range(0.0, 2.0)),
-                velocity: v,
-                area: share,
-                size: (share.sqrt() * 1.05).clamp(1.1, 4.2),
-                lump: 0.0,
-                blown: false,
-            });
+            let (pos, vel, sz) = {
+                let r = &mut self.random;
+                let mut v = velocity * r.range(0.55, 1.25) + outward * (speed * r.range(0.05, 0.25));
+                v.y += speed * r.range(0.02, 0.2);
+                v += V2::new(r.range(-30.0, 30.0), r.range(-20.0, 40.0));
+                let pos = origin + V2::new(r.range(-1.0, 1.0), r.range(0.0, 2.0));
+                let sz = (share.sqrt() * 1.05).clamp(1.1, 4.2);
+                (pos, v, sz)
+            };
+            let grain = self.make_grain(pos, vel, share, sz, 0.0, false);
+            self.grains.push(grain);
         }
 
         // Add cloud motes (эффект облачков) for the cursor
-        let random = &mut self.random;
-        if self.cloud_amount > 0.001 && (random.next() < 0.55 * self.cloud_amount || speed > 120.0) && self.motes.len() < MAX_MOTES {
-            let mote_v = velocity * random.range(0.3, 0.7)
-                + outward * (speed * random.range(0.1, 0.3))
-                + V2::new(random.range(-35.0, 35.0), random.range(30.0, 90.0));
-            self.motes.push(Mote {
-                position: origin + V2::new(random.range(-3.0, 3.0), random.range(-1.0, 4.0)),
-                velocity: mote_v,
-                size: random.range(14.0, 32.0),
-                alpha: random.range(0.20, 0.40),
-                age: 0.0,
-                life: random.range(0.6, 1.4),
-            });
+        if self.cloud_amount > 0.001 && (self.random.next() < 0.55 * self.cloud_amount || speed > 120.0) && self.motes.len() < MAX_MOTES {
+            let (pos, mote_v, sz, al, life) = {
+                let r = &mut self.random;
+                let mote_v = velocity * r.range(0.3, 0.7)
+                    + outward * (speed * r.range(0.1, 0.3))
+                    + V2::new(r.range(-35.0, 35.0), r.range(30.0, 90.0));
+                let pos = origin + V2::new(r.range(-3.0, 3.0), r.range(-1.0, 4.0));
+                let sz = r.range(14.0, 32.0);
+                let al = r.range(0.20, 0.40);
+                let life = r.range(0.6, 1.4);
+                (pos, mote_v, sz, al, life)
+            };
+            let mote = self.make_mote(pos, mote_v, sz, al, life);
+            self.motes.push(mote);
         }
 
         area
@@ -2331,17 +2356,16 @@ impl Air {
             if self.grains.len() >= MAX_GRAINS {
                 break;
             }
-            let r = &mut self.random;
-            let vx = dir * r.range(speed * 0.75, speed * 1.35) + r.range(-20.0, 20.0);
-            let vy = r.range(50.0, 240.0) + speed * 0.1 * r.range(0.0, 1.0);
-            self.grains.push(Grain {
-                position: origin + V2::new(r.range(-2.0, 2.0), r.range(0.0, 4.0)),
-                velocity: V2::new(vx, vy),
-                area: share,
-                size: (share.sqrt() * 1.15).clamp(1.2, 4.0),
-                lump: 0.0,
-                blown: true,
-            });
+            let (pos, vel, sz) = {
+                let r = &mut self.random;
+                let vx = dir * r.range(speed * 0.75, speed * 1.35) + r.range(-20.0, 20.0);
+                let vy = r.range(50.0, 240.0) + speed * 0.1 * r.range(0.0, 1.0);
+                let pos = origin + V2::new(r.range(-2.0, 2.0), r.range(0.0, 4.0));
+                let sz = (share.sqrt() * 1.15).clamp(1.2, 4.0);
+                (pos, V2::new(vx, vy), sz)
+            };
+            let grain = self.make_grain(pos, vel, share, sz, 0.0, true);
+            self.grains.push(grain);
         }
 
         // Billowing cloud motes (эффект облачков)
@@ -2350,17 +2374,18 @@ impl Air {
             if self.motes.len() >= MAX_MOTES {
                 break;
             }
-            let r = &mut self.random;
-            let mote_vx = dir * r.range(speed * 0.45, speed * 0.95) + r.range(-20.0, 20.0);
-            let mote_vy = r.range(40.0, 160.0);
-            self.motes.push(Mote {
-                position: origin + V2::new(r.range(-5.0, 5.0), r.range(0.0, 8.0)),
-                velocity: V2::new(mote_vx, mote_vy),
-                size: r.range(22.0, 48.0) * self.cloud_size.max(0.7),
-                alpha: r.range(0.40, 0.70),
-                age: 0.0,
-                life: r.range(0.6, 1.4),
-            });
+            let (pos, vel, sz, al, life) = {
+                let r = &mut self.random;
+                let mote_vx = dir * r.range(speed * 0.45, speed * 0.95) + r.range(-20.0, 20.0);
+                let mote_vy = r.range(40.0, 160.0);
+                let pos = origin + V2::new(r.range(-5.0, 5.0), r.range(0.0, 8.0));
+                let sz = r.range(22.0, 48.0) * self.cloud_size.max(0.7);
+                let al = r.range(0.40, 0.70);
+                let life = r.range(0.6, 1.4);
+                (pos, V2::new(mote_vx, mote_vy), sz, al, life)
+            };
+            let mote = self.make_mote(pos, vel, sz, al, life);
+            self.motes.push(mote);
         }
     }
 
@@ -2427,14 +2452,15 @@ impl Air {
             vy *= self.spray_force;
 
             let is_lump = self.random.next() < 0.25;
-            self.grains.push(Grain {
-                position: spawn_pos,
-                velocity: V2::new(vx, vy),
-                area: share,
-                size: (share.sqrt() * 1.15).clamp(1.2, 4.5),
-                lump: if is_lump { self.random.range(0.2, 0.65) } else { 0.0 },
-                blown: false,
-            });
+            let (sz, lump) = {
+                let r = &mut self.random;
+                (
+                    (share.sqrt() * 1.15).clamp(1.2, 4.5),
+                    if is_lump { r.range(0.2, 0.65) } else { 0.0 },
+                )
+            };
+            let grain = self.make_grain(spawn_pos, V2::new(vx, vy), share, sz, lump, false);
+            self.grains.push(grain);
         }
 
         // Billowing clouds (эффект облачков)
@@ -2450,28 +2476,32 @@ impl Air {
                 let mote_vy = r.range(60.0, 200.0) + speed * 0.12;
                 let spawn_x = col_x + side_dir * r.range(2.0, 10.0);
                 let spawn_y = win_bottom + r.range(2.0, 6.0);
+                let (pos1, vel1, sz1, al1, life1) = (
+                    V2::new(spawn_x, spawn_y),
+                    V2::new(mote_vx * 0.6, mote_vy * 0.7),
+                    r.range(20.0, 45.0),
+                    r.range(0.18, 0.35),
+                    r.range(0.8, 1.5),
+                );
 
                 // Large billowing mist cloud
-                self.motes.push(Mote {
-                    position: V2::new(spawn_x, spawn_y),
-                    velocity: V2::new(mote_vx * 0.6, mote_vy * 0.7),
-                    size: r.range(20.0, 45.0),
-                    alpha: r.range(0.18, 0.35),
-                    age: 0.0,
-                    life: r.range(0.8, 1.5),
-                });
+                let mote1 = self.make_mote(pos1, vel1, sz1, al1, life1);
+                self.motes.push(mote1);
 
                 // Bright dense core puff if displacement is prominent
                 if (area > 1.2 || self.cloud_amount > 1.4) && self.motes.len() < MAX_MOTES {
-                    let r2 = &mut self.random;
-                    self.motes.push(Mote {
-                        position: V2::new(spawn_x + r2.range(-3.0, 3.0), spawn_y + r2.range(-1.0, 3.0)),
-                        velocity: V2::new(mote_vx * 0.85, mote_vy * 0.9),
-                        size: r2.range(12.0, 22.0),
-                        alpha: r2.range(0.28, 0.48),
-                        age: 0.0,
-                        life: r2.range(0.5, 1.0),
-                    });
+                    let (pos2, vel2, sz2, al2, life2) = {
+                        let r2 = &mut self.random;
+                        (
+                            V2::new(spawn_x + r2.range(-3.0, 3.0), spawn_y + r2.range(-1.0, 3.0)),
+                            V2::new(mote_vx * 0.85, mote_vy * 0.9),
+                            r2.range(12.0, 22.0),
+                            r2.range(0.28, 0.48),
+                            r2.range(0.5, 1.0),
+                        )
+                    };
+                    let mote2 = self.make_mote(pos2, vel2, sz2, al2, life2);
+                    self.motes.push(mote2);
                 }
             }
         }
@@ -2481,7 +2511,6 @@ impl Air {
         if self.motes.is_empty() {
             return;
         }
-        let damping = (-3.8 * dt).exp();
         let drift = self.wind_speed() * 0.45;
         let clock = self.clock as f32;
         let mut i = self.motes.len();
@@ -2493,12 +2522,86 @@ impl Air {
                 self.motes.swap_remove(i);
             } else {
                 let progress = (mote.age / mote.life).clamp(0.0, 1.0);
-                let lift = (1.0 - progress * 2.0).max(-0.5) * 15.0;
-                mote.velocity.y += (lift - 6.0) * dt;
+                let damping = (-3.8 * mote.drag_scale * dt).exp();
+                mote.flutter_phase += mote.flutter_rate * dt;
+
+                // Buoyancy vs gravity: randomized per mote.
+                // Light motes (low gravity_scale) rise more and linger; heavy motes drop sooner.
+                let lift = (1.0 - progress * (1.6 * mote.gravity_scale)).max(-0.8) * (14.0 * (1.8 - mote.gravity_scale.min(1.4)));
+                let gravity_pull = 6.0 * mote.gravity_scale;
+                mote.velocity.y += (lift - gravity_pull) * dt;
                 mote.velocity *= damping;
-                let turbulence = ((mote.position.y * 0.04 + clock * 2.2).sin() * 12.0) * (1.0 - progress);
-                mote.position += (mote.velocity + V2::new(drift + turbulence, 0.0)) * dt;
+
+                // Swirling, billowing trajectory curl & turbulence:
+                let wave = mote.flutter_phase.sin();
+                let curl_x = -wave * mote.curl * (1.0 - progress);
+                let curl_y = (mote.flutter_phase * 1.3).cos() * (mote.curl * 0.5) * (1.0 - progress);
+                let turbulence = ((mote.position.y * 0.04 + clock * 2.2 + mote.flutter_phase).sin() * 14.0) * (1.0 - progress);
+
+                mote.position += (mote.velocity + V2::new(drift + turbulence + curl_x, curl_y)) * dt;
             }
+        }
+    }
+
+    fn make_grain(
+        &mut self,
+        position: V2,
+        velocity: V2,
+        area: f32,
+        size: f32,
+        lump: f32,
+        blown: bool,
+    ) -> Grain {
+        let r = &mut self.random;
+        let speed_mult = r.range(0.82, 1.20);
+        let angle_jitter = r.range(-0.14, 0.14);
+        let (sin_a, cos_a) = angle_jitter.sin_cos();
+        let rotated_vel = V2::new(
+            (velocity.x * cos_a - velocity.y * sin_a) * speed_mult,
+            (velocity.x * sin_a + velocity.y * cos_a) * speed_mult,
+        );
+        Grain {
+            position,
+            velocity: rotated_vel,
+            area,
+            size,
+            lump,
+            blown,
+            gravity_scale: r.range(0.65, 1.45),
+            drag_scale: r.range(0.75, 1.35),
+            sway_phase: r.range(0.0, 6.28),
+            sway_rate: r.range(2.0, 7.0),
+        }
+    }
+
+    fn make_mote(
+        &mut self,
+        position: V2,
+        velocity: V2,
+        size: f32,
+        alpha: f32,
+        life: f32,
+    ) -> Mote {
+        let r = &mut self.random;
+        let speed_mult = r.range(0.80, 1.24);
+        let angle_jitter = r.range(-0.20, 0.20);
+        let (sin_a, cos_a) = angle_jitter.sin_cos();
+        let rotated_vel = V2::new(
+            (velocity.x * cos_a - velocity.y * sin_a) * speed_mult,
+            (velocity.x * sin_a + velocity.y * cos_a) * speed_mult,
+        );
+        Mote {
+            position,
+            velocity: rotated_vel,
+            size,
+            alpha,
+            age: 0.0,
+            life,
+            gravity_scale: r.range(0.50, 1.55),
+            drag_scale: r.range(0.75, 1.35),
+            flutter_phase: r.range(0.0, 6.28),
+            flutter_rate: r.range(1.5, 5.0),
+            curl: r.range(-16.0, 16.0),
         }
     }
 
@@ -2579,26 +2682,28 @@ impl Air {
             return;
         }
         let ejection = self.ejection_force;
-        let random = &mut self.random;
-        self.grains.push(Grain {
-            position: position + V2::new(random.range(-1.0, 1.0), random.range(-3.0, 0.0)),
-            velocity: V2::new(direction * random.range(600.0, 1600.0) * ejection, random.range(60.0, 420.0) * ejection),
-            area: 0.0,
-            size: random.range(1.1, 2.6) * self.spray_size,
-            lump: 0.0,
-            blown: true,
-        });
-        if random.next() >= 0.35 || self.motes.len() >= MAX_MOTES {
-            return;
+        let (pos, vel, sz) = {
+            let r = &mut self.random;
+            let pos = position + V2::new(r.range(-1.0, 1.0), r.range(-3.0, 0.0));
+            let vel = V2::new(direction * r.range(600.0, 1600.0) * ejection, r.range(60.0, 420.0) * ejection);
+            let sz = r.range(1.1, 2.6) * self.spray_size;
+            (pos, vel, sz)
+        };
+        let grain = self.make_grain(pos, vel, 0.0, sz, 0.0, true);
+        self.grains.push(grain);
+
+        if self.random.next() < 0.35 && self.motes.len() < MAX_MOTES {
+            let (pos, vel, sz, al, life) = {
+                let r = &mut self.random;
+                let vel = V2::new(direction * r.range(200.0, 600.0) * ejection, r.range(20.0, 120.0) * ejection);
+                let sz = r.range(8.0, 18.0) * self.cloud_size;
+                let al = (r.range(0.08, 0.20) * self.cloud_density).clamp(0.0, 1.0);
+                let life = r.range(0.6, 1.3);
+                (position, vel, sz, al, life)
+            };
+            let mote = self.make_mote(pos, vel, sz, al, life);
+            self.motes.push(mote);
         }
-        self.motes.push(Mote {
-            position,
-            velocity: V2::new(direction * random.range(200.0, 600.0) * ejection, random.range(20.0, 120.0) * ejection),
-            size: random.range(8.0, 18.0) * self.cloud_size,
-            alpha: (random.range(0.08, 0.20) * self.cloud_density).clamp(0.0, 1.0),
-            age: 0.0,
-            life: random.range(0.6, 1.3),
-        });
     }
 }
 

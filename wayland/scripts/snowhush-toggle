@@ -1,0 +1,124 @@
+#!/bin/bash
+# Snowhush Wayland daemon control script
+# Supports: toggle (default), start, stop, restart
+
+ACTION="${1:-toggle}"
+LOGFILE="/run/user/$(id -u)/snowhush-toggle.log"
+
+LOCKFILE="/run/user/$(id -u)/snowhush-toggle.lock"
+exec 200>"$LOCKFILE"
+if ! flock -x -w 2 200; then
+    echo "$(date '+%H:%M:%S.%3N') [toggle] lock acquisition failed for action=$ACTION" >> "$LOGFILE" 2>/dev/null || true
+    exit 0
+fi
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+if [ -z "$WAYLAND_DISPLAY" ]; then
+    for s in "$XDG_RUNTIME_DIR"/wayland-*; do
+        if [ -S "$s" ]; then
+            export WAYLAND_DISPLAY=$(basename "$s")
+            break
+        fi
+    done
+fi
+
+get_alive_pids() {
+    local pids
+    pids=$(pidof snowhush-wayland 2>/dev/null || pgrep -x 'snowhush-waylan' 2>/dev/null || pgrep -f '/home/user/.local/bin/snowhush-wayland' 2>/dev/null || true)
+    local alive=""
+    for p in $pids; do
+        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+            case " $alive " in
+                *" $p "*) ;;
+                *) alive="$alive $p" ;;
+            esac
+        fi
+    done
+    echo "$alive"
+}
+
+stop_daemon() {
+    local pids
+    pids=$(get_alive_pids)
+    if [ -z "$pids" ]; then
+        echo "$(date '+%H:%M:%S.%3N') [toggle] stop: already stopped" >> "$LOGFILE" 2>/dev/null || true
+        return 0
+    fi
+
+    echo "$(date '+%H:%M:%S.%3N') [toggle] stop: killing pids $pids" >> "$LOGFILE" 2>/dev/null || true
+    for p in $pids; do
+        kill -TERM "$p" 2>/dev/null || true
+    done
+
+    # Wait for exit (typically ~15ms)
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        local still_alive=0
+        for p in $pids; do
+            if kill -0 "$p" 2>/dev/null; then
+                still_alive=1
+                break
+            fi
+        done
+        if [ "$still_alive" -eq 0 ]; then
+            echo "$(date '+%H:%M:%S.%3N') [toggle] stop: cleanly exited" >> "$LOGFILE" 2>/dev/null || true
+            return 0
+        fi
+        python3 -c 'import time; time.sleep(0.02)' 2>/dev/null || true
+    done
+
+    for p in $pids; do
+        kill -9 "$p" 2>/dev/null || true
+    done
+    echo "$(date '+%H:%M:%S.%3N') [toggle] stop: forced SIGKILL" >> "$LOGFILE" 2>/dev/null || true
+}
+
+start_daemon() {
+    local pids
+    pids=$(get_alive_pids)
+    if [ -n "$pids" ]; then
+        echo "$(date '+%H:%M:%S.%3N') [toggle] start: already running (pids $pids)" >> "$LOGFILE" 2>/dev/null || true
+        return 0
+    fi
+
+    echo "$(date '+%H:%M:%S.%3N') [toggle] start: launching snowhush-wayland" >> "$LOGFILE" 2>/dev/null || true
+    # Close lock FD before spawning daemon so child does not inherit lock
+    exec 200>&-
+    export RUST_LOG=info
+    setsid -f /home/user/.local/bin/snowhush-wayland </dev/null >>"/run/user/$(id -u)/snowhush-wayland.log" 2>&1
+}
+
+case "$ACTION" in
+    start)
+        start_daemon
+        ;;
+    stop)
+        stop_daemon
+        exec 200>&-
+        ;;
+    restart)
+        stop_daemon
+        start_daemon
+        ;;
+    toggle|*)
+        STAMP_FILE="/run/user/$(id -u)/snowhush-toggle.stamp"
+        NOW=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+        if [ -f "$STAMP_FILE" ]; then
+            LAST=$(cat "$STAMP_FILE" 2>/dev/null || echo 0)
+            DIFF=$(( NOW - LAST ))
+            if [ "$DIFF" -ge 0 ] && [ "$DIFF" -lt 350 ]; then
+                echo "$(date '+%H:%M:%S.%3N') [toggle] debounced (invoked ${DIFF}ms after previous call)" >> "$LOGFILE" 2>/dev/null || true
+                exit 0
+            fi
+        fi
+        echo "$NOW" > "$STAMP_FILE" 2>/dev/null || true
+
+        CURRENT_PIDS=$(get_alive_pids)
+        if [ -n "$CURRENT_PIDS" ]; then
+            stop_daemon
+            exec 200>&-
+        else
+            start_daemon
+        fi
+        ;;
+esac

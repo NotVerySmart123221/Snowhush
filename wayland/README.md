@@ -18,3 +18,8 @@ cargo build --release --manifest-path wayland/Cargo.toml
 
 ### Options
 - `-s, --snowfall <RATE>`: Snowfall intensity: `off`, `light`, `steady`, `heavy`, `variable` (default: `steady`).
+
+### Settings GUI & Controls
+Snowhush includes a Quickshell-based GUI interface in `wayland/quickshell/shell.qml` and control scripts in `wayland/scripts/`:
+- `wayland/scripts/snowhush-toggle`: Toggles the daemon on/off with rapid keypress debounce protection.
+- `wayland/scripts/snowhush-settings`: Launches the floating settings control panel.

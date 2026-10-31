@@ -1,0 +1,39 @@
+#!/bin/bash
+# Snowhush settings interface launcher
+# Ensures any previous interface processes are killed before opening a new one
+
+LOCKFILE="/run/user/$(id -u)/snowhush-settings.lock"
+exec 201>"$LOCKFILE"
+if ! flock -x -w 2 201; then
+    exit 0
+fi
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+if [ -z "$WAYLAND_DISPLAY" ]; then
+    for s in "$XDG_RUNTIME_DIR"/wayland-*; do
+        if [ -S "$s" ]; then
+            export WAYLAND_DISPLAY=$(basename "$s")
+            break
+        fi
+    done
+fi
+
+# Kill all previous interface processes before opening a new one
+EXISTING=$(pgrep -f '(qs|quickshell).*-c[[:space:]]+snowhush' 2>/dev/null)
+if [ -n "$EXISTING" ]; then
+    kill -TERM $EXISTING 2>/dev/null || true
+    for i in 1 2 3 4 5; do
+        if ! pgrep -f '(qs|quickshell).*-c[[:space:]]+snowhush' >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.04
+    done
+    kill -9 $EXISTING 2>/dev/null || true
+fi
+
+# Close lock FD before spawning so child does not inherit lock
+exec 201>&-
+
+# Launch the fresh settings UI
+exec qs -c snowhush "$@"

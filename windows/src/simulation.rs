@@ -1271,7 +1271,7 @@ impl SnowSimulation {
                 let target_speed = wind * (0.75 + 0.35 * grain.drag_scale) * (0.8 + 0.2 * self.workspace_sweep.min(2.0));
                 grain.velocity.x += (target_speed - grain.velocity.x) * (dt * (2.0 + grain.drag_scale)).min(1.0);
                 grain.velocity.y -= GRAVITY * 0.28 * global_gravity_scale * grain.gravity_scale * dt;
-                if grain.velocity.x.abs() < 80.0 && self.air.clock >= self.workspace_transition_until {
+                if grain.velocity.x.abs() < 80.0 && self.air.clock >= self.workspace_transition_until && !self.air.blowing() {
                     grain.blown = false;
                 }
             } else {
@@ -1288,7 +1288,8 @@ impl SnowSimulation {
             if grain.position.y < -10.0 {
                 self.air.grains.swap_remove(i);
                 continue;
-            } else if !grain.blown
+            } else if !self.air.blowing()
+                && !grain.blown
                 && self.accumulates
                 && grain.velocity.y <= 0.0
                 && let Some((li, _)) = landing(&self.layers, grain.position.x, previous_y, grain.position.y, 0, self.windows_solid)

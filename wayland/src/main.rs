@@ -6,6 +6,11 @@ use snowhush::simulation::Snowfall;
 use wayland::{AppConfig, SnowhushApp};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+
     env_logger::init();
 
     let mut config = if let Some((file_cfg, _)) = wayland::load_config_file() {

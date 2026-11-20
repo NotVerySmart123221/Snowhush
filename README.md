@@ -20,17 +20,61 @@ Fork of [mbezruchko/Snowhush](https://github.com/mbezruchko/Snowhush) ([snowhush
 
 ## Install
 
+Requires Rust (`cargo`) to build; `quickshell` (`qs`) is optional and only needed for the settings GUI.
+
 ```bash
-./wayland/install.sh
+./wayland/install.sh --apply-binds
 ```
 
 Installs `snowhush-wayland`, `snowhush-toggle`, `snowhush-settings`, `~/.config/quickshell/snowhush/shell.qml`, and a `.desktop` entry.
 
-- `./wayland/install.sh --no-build` — install using existing release binary
-- `./wayland/install.sh --prefix /usr/local` — custom prefix (default `~/.local`)
-- `./wayland/install.sh --uninstall` — remove installed files (`--purge` also removes `~/.config/snowhush`)
+| Flag | Description |
+| --- | --- |
+| `--apply-binds` | Append marked keybinds & window rules to detected WM config (`hyprland.conf`, `sway/config`, `niri/config.kdl`, `river/init`) |
+| `--no-build` | Install using an already built release binary |
+| `--prefix <DIR>` | Custom install prefix (default `~/.local`) |
+| `--uninstall` | Stop daemon and remove installed files + applied WM binds |
+| `--purge` | With `--uninstall`, also delete `~/.config/snowhush` |
 
-Compositor keybind & window-rule examples: [wayland/README.md](wayland/README.md).
+Manual compositor config snippets: [wayland/README.md](wayland/README.md).
+
+## Keybinds & Controls
+
+### Default WM Keybinds
+- `Alt+S` — toggle snowfall daemon (`snowhush-toggle`)
+- `Ctrl+Alt+S` — open settings GUI (`snowhush-settings`)
+
+### Daemon Script (`snowhush-toggle`)
+```bash
+snowhush-toggle [toggle|start|stop|restart]
+```
+
+### Settings GUI (`snowhush-settings`)
+- `Ctrl+F` — search across all settings
+- `Ctrl+1` .. `Ctrl+5` — switch sections
+- `Esc` — clear search or close window
+- **Double-click / Right-click** any slider or value badge — reset that parameter to default
+- **Mouse wheel** on any slider — step by one increment
+- **Reset** button — two-click confirmation to restore all defaults
+
+## Config & CLI
+
+Live hot-reloaded config: `~/.config/snowhush/config.json` (changes apply immediately without restarting the daemon).
+
+Common `snowhush-wayland` flags (run `snowhush-wayland --help` for the full list):
+- `-s, --snowfall <off|light|steady|heavy|variable>` — base snowfall preset
+- `--static-wind <PX/S>` — ambient horizontal wind (`-300..+300`)
+- `--wind-factor <FLOAT>` — dynamic breeze gusts (`0` = steady)
+- `--wind-threshold <PX/S>` / `--wind-erosion-rate <FLOAT>` — peak scouring threshold & speed
+- `--motion-shed <FLOAT>` / `--shed-threshold <PX/S>` — own-ledge shedding force & speed threshold
+- `--window-wake <FLOAT>` — airborne snow scatter around moving/opening windows
+- `--melt-rate <FLOAT>` / `--no-melt` — natural snow thawing
+- `--workspace-sweep <FLOAT>` / `--sweep-ground` — workspace transition sweep
+- `--top-margin <PX>` / `--no-layers` / `--no-fullscreen-snow` — compositor surface rules
+- `--dynamic-weather` / `--weather-mode <auto|calm|breeze|blizzard|squall|thaw>`
+- `--max-snow <INT>` / `--max-effects <INT>` — particle caps
+
+Custom bars/docks on any Wayland compositor can also export ledges to `/dev/shm/snowhush_ledges.json` (`[{"id":"...","x":0,"y":0,"width":300,"height":40,"radius":12,"visible":true}]`).
 
 ## License
 

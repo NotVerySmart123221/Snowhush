@@ -8,6 +8,7 @@ DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}"
 DO_BUILD=1
 DO_UNINSTALL=0
 DO_PURGE=0
+APPLY_BINDS=0
 
 usage() {
     cat <<EOF
@@ -18,7 +19,8 @@ Install or uninstall Snowhush for Wayland (daemon, control scripts, Quickshell U
 Options:
   --prefix <DIR>   Install prefix for binaries/scripts (default: ~/.local)
   --no-build       Skip 'cargo build --release' (use existing release binary)
-  --uninstall      Remove installed binaries, scripts, UI, and desktop entry
+  --apply-binds    Append keybinds & window rules to detected WM config (idempotent)
+  --uninstall      Remove installed binaries, scripts, UI, desktop entry, and applied binds
   --purge          With --uninstall, also remove ~/.config/snowhush
   -h, --help       Show this help
 EOF
@@ -32,6 +34,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-build)
             DO_BUILD=0
+            shift
+            ;;
+        --apply-binds)
+            APPLY_BINDS=1
             shift
             ;;
         --uninstall)
@@ -59,6 +65,92 @@ QS_DIR="${CONFIG_DIR}/quickshell/snowhush"
 APP_DIR="${DATA_DIR}/applications"
 DESKTOP_FILE="${APP_DIR}/snowhush-settings.desktop"
 
+remove_marked_block() {
+    local file="$1"
+    local start_mark="$2"
+    local end_mark="$3"
+    [[ -f "$file" ]] || return 0
+    if grep -Fq "$start_mark" "$file"; then
+        local tmp
+        tmp="$(mktemp)"
+        awk -v s="$start_mark" -v e="$end_mark" '
+            index($0, s) { skip = 1; next }
+            index($0, e) { skip = 0; next }
+            !skip { print }
+        ' "$file" > "$tmp"
+        mv "$tmp" "$file"
+        echo "Removed Snowhush binds from ${file}"
+    fi
+}
+
+append_marked_block() {
+    local file="$1"
+    local start_mark="$2"
+    local content="$3"
+    if grep -Fq "$start_mark" "$file" || grep -Fq "snowhush-toggle" "$file"; then
+        echo "Snowhush binds already present in ${file}, skipping."
+        return 0
+    fi
+    printf '\n%s\n' "$content" >> "$file"
+    echo "Added Snowhush binds to ${file}"
+}
+
+apply_wm_binds() {
+    if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+        local conf="${CONFIG_DIR}/hypr/hyprland.conf"
+        if [[ -f "$conf" ]]; then
+            append_marked_block "$conf" "# >>> snowhush" "# >>> snowhush
+layerrule = above_lock 1, match:namespace ^(snowhush)$
+windowrule = float on, center on, size 780 620, match:class .*snowhush-settings.*
+bindl = ALT, S, exec, ${BIN_DIR}/snowhush-toggle
+bindl = CTRL ALT, S, exec, ${BIN_DIR}/snowhush-settings
+# <<< snowhush"
+        else
+            echo "Hyprland config ${conf} not found (custom/Lua setup?). Add binds manually — see wayland/README.md."
+        fi
+    elif [[ -n "${SWAYSOCK:-}" ]]; then
+        local conf="${CONFIG_DIR}/sway/config"
+        if [[ -f "$conf" ]]; then
+            append_marked_block "$conf" "# >>> snowhush" "# >>> snowhush
+for_window [app_id=\"snowhush-settings\"] floating enable, resize set 780 620, move position center
+bindsym Mod1+s exec ${BIN_DIR}/snowhush-toggle
+bindsym Control+Mod1+s exec ${BIN_DIR}/snowhush-settings
+# <<< snowhush"
+        else
+            echo "Sway config ${conf} not found. Add binds manually — see wayland/README.md."
+        fi
+    elif [[ -n "${NIRI_SOCKET:-}" ]]; then
+        local conf="${CONFIG_DIR}/niri/config.kdl"
+        if [[ -f "$conf" ]]; then
+            if grep -Fq "// >>> snowhush" "$conf" || grep -Fq "snowhush-toggle" "$conf"; then
+                echo "Snowhush rules/binds already present in ${conf}, skipping."
+            else
+                printf '\n// >>> snowhush\nwindow-rule {\n    match app-id="snowhush-settings"\n    open-floating true\n    default-column-width { fixed 780; }\n    default-window-height { fixed 620; }\n}\n// <<< snowhush\n' >> "$conf"
+                echo "Added Snowhush window-rule to ${conf}"
+                if grep -Eq '^[[:space:]]*binds[[:space:]]*\{' "$conf"; then
+                    echo "Add inside your existing 'binds { ... }' block in ${conf}:"
+                    echo "  Alt+S { spawn \"${BIN_DIR}/snowhush-toggle\"; }"
+                    echo "  Ctrl+Alt+S { spawn \"${BIN_DIR}/snowhush-settings\"; }"
+                else
+                    printf '\n// >>> snowhush-binds\nbinds {\n    Alt+S { spawn "%s/snowhush-toggle"; }\n    Ctrl+Alt+S { spawn "%s/snowhush-settings"; }\n}\n// <<< snowhush-binds\n' "$BIN_DIR" "$BIN_DIR" >> "$conf"
+                    echo "Added Snowhush binds to ${conf}"
+                fi
+            fi
+        else
+            echo "Niri config ${conf} not found. Add binds manually — see wayland/README.md."
+        fi
+    elif [[ -f "${CONFIG_DIR}/river/init" ]]; then
+        local conf="${CONFIG_DIR}/river/init"
+        append_marked_block "$conf" "# >>> snowhush" "# >>> snowhush
+riverctl rule-add -app-id 'snowhush-settings' float
+riverctl map normal Alt S spawn ${BIN_DIR}/snowhush-toggle
+riverctl map normal Control+Alt S spawn ${BIN_DIR}/snowhush-settings
+# <<< snowhush"
+    else
+        echo "No supported compositor config detected for --apply-binds. See wayland/README.md."
+    fi
+}
+
 if [[ "$DO_UNINSTALL" -eq 1 ]]; then
     echo "Uninstalling Snowhush for Wayland..."
     if [[ -x "${BIN_DIR}/snowhush-toggle" ]]; then
@@ -69,6 +161,11 @@ if [[ "$DO_UNINSTALL" -eq 1 ]]; then
           "${BIN_DIR}/snowhush-settings" \
           "${DESKTOP_FILE}"
     rm -rf "${QS_DIR}"
+    remove_marked_block "${CONFIG_DIR}/hypr/hyprland.conf" "# >>> snowhush" "# <<< snowhush"
+    remove_marked_block "${CONFIG_DIR}/sway/config" "# >>> snowhush" "# <<< snowhush"
+    remove_marked_block "${CONFIG_DIR}/niri/config.kdl" "// >>> snowhush" "// <<< snowhush"
+    remove_marked_block "${CONFIG_DIR}/niri/config.kdl" "// >>> snowhush-binds" "// <<< snowhush-binds"
+    remove_marked_block "${CONFIG_DIR}/river/init" "# >>> snowhush" "# <<< snowhush"
     if [[ "$DO_PURGE" -eq 1 ]]; then
         rm -rf "${CONFIG_DIR}/snowhush"
         echo "Removed config directory: ${CONFIG_DIR}/snowhush"
@@ -131,19 +228,21 @@ case ":${PATH}:" in
 esac
 
 echo ""
-if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
-    echo "Hyprland detected. Add to your Hyprland config:"
+if [[ "$APPLY_BINDS" -eq 1 ]]; then
+    apply_wm_binds
+elif [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    echo "Hyprland detected. Run with --apply-binds or add to your config:"
     echo "  layerrule = above_lock 1, match:namespace ^(snowhush)$"
     echo "  windowrule = float on, center on, size 780 620, match:class .*snowhush-settings.*"
     echo "  bindl = ALT, S, exec, snowhush-toggle"
     echo "  bindl = CTRL ALT, S, exec, snowhush-settings"
 elif [[ -n "${SWAYSOCK:-}" ]]; then
-    echo "Sway detected. Add to your Sway config:"
+    echo "Sway detected. Run with --apply-binds or add to your config:"
     echo "  for_window [app_id=\"snowhush-settings\"] floating enable, resize set 780 620, move position center"
     echo "  bindsym Mod1+s exec snowhush-toggle"
     echo "  bindsym Control+Mod1+s exec snowhush-settings"
 elif [[ -n "${NIRI_SOCKET:-}" ]]; then
-    echo "Niri detected. See wayland/README.md for KDL window-rule and binds."
+    echo "Niri detected. Run with --apply-binds or see wayland/README.md for KDL rules/binds."
 else
     echo "Run 'snowhush-toggle' to toggle snowfall, 'snowhush-settings' for the GUI."
 fi

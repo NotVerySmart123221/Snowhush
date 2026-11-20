@@ -18,9 +18,10 @@ Auto-detected at startup via compositor IPC environment variables:
 Builds the release binary and installs `snowhush-wayland`, `snowhush-toggle`, `snowhush-settings`, the Quickshell UI (`~/.config/quickshell/snowhush/shell.qml`), and a `.desktop` entry.
 
 Options:
+- `./wayland/install.sh --apply-binds` — append keybinds & window rules to detected WM config (`hyprland.conf`, `sway/config`, `niri/config.kdl`, `river/init`)
 - `./wayland/install.sh --no-build` — install using an already built release binary
 - `./wayland/install.sh --prefix /usr/local` — custom install prefix (default `~/.local`)
-- `./wayland/install.sh --uninstall` — remove installed files (add `--purge` to also delete `~/.config/snowhush`)
+- `./wayland/install.sh --uninstall` — remove installed files and applied binds (add `--purge` to also delete `~/.config/snowhush`)
 
 ## Compositor Keybinds & Rules
 

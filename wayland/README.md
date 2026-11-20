@@ -9,16 +9,18 @@ Auto-detected at startup via compositor IPC environment variables:
 - **Niri** (`NIRI_SOCKET`): native JSON-line IPC (`Workspaces`, `Windows`) over Unix socket with active workspace filtering, `floating > tiled` occlusion, fullscreen detection, and workspace sweep.
 - **River / Wayfire / Labwc / generic `wlr-layer-shell`**: click-through overlay snowfall, lockscreen detection (`hyprlock`, `swaylock`, `waylock`, `gtklock`), and optional custom panel ledges via `/dev/shm/snowhush_ledges.json`.
 
-## Build and Install
+## Quick Install
 
 ```bash
-cargo build --release --manifest-path wayland/Cargo.toml
-install -m 755 wayland/target/release/snowhush-wayland ~/.local/bin/snowhush-wayland
-install -m 755 wayland/scripts/snowhush-toggle ~/.local/bin/snowhush-toggle
-install -m 755 wayland/scripts/snowhush-settings ~/.local/bin/snowhush-settings
-mkdir -p ~/.config/quickshell/snowhush
-cp wayland/quickshell/shell.qml ~/.config/quickshell/snowhush/shell.qml
+./wayland/install.sh
 ```
+
+Builds the release binary and installs `snowhush-wayland`, `snowhush-toggle`, `snowhush-settings`, the Quickshell UI (`~/.config/quickshell/snowhush/shell.qml`), and a `.desktop` entry.
+
+Options:
+- `./wayland/install.sh --no-build` — install using an already built release binary
+- `./wayland/install.sh --prefix /usr/local` — custom install prefix (default `~/.local`)
+- `./wayland/install.sh --uninstall` — remove installed files (add `--purge` to also delete `~/.config/snowhush`)
 
 ## Compositor Keybinds & Rules
 

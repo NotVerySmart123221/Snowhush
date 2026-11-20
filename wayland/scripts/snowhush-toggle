@@ -23,9 +23,11 @@ if [ -z "$WAYLAND_DISPLAY" ]; then
     done
 fi
 
+SNOWHUSH_BIN="${SNOWHUSH_BIN:-$(command -v snowhush-wayland 2>/dev/null || echo "$HOME/.local/bin/snowhush-wayland")}"
+
 get_alive_pids() {
     local pids
-    pids=$(pidof snowhush-wayland 2>/dev/null || pgrep -x 'snowhush-waylan' 2>/dev/null || pgrep -f '/home/user/.local/bin/snowhush-wayland' 2>/dev/null || true)
+    pids=$(pidof snowhush-wayland 2>/dev/null || pgrep -x 'snowhush-waylan' 2>/dev/null || pgrep -f "$SNOWHUSH_BIN" 2>/dev/null || true)
     local alive=""
     for p in $pids; do
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
@@ -85,7 +87,7 @@ start_daemon() {
     # Close lock FD before spawning daemon so child does not inherit lock
     exec 200>&-
     export RUST_LOG=info
-    setsid -f /home/user/.local/bin/snowhush-wayland </dev/null >>"/run/user/$(id -u)/snowhush-wayland.log" 2>&1
+    setsid -f "$SNOWHUSH_BIN" </dev/null >>"/run/user/$(id -u)/snowhush-wayland.log" 2>&1
 }
 
 case "$ACTION" in

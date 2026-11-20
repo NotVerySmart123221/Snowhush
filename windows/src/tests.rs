@@ -804,8 +804,8 @@ fn constant_strong_wind_erodes_snowdrifts() {
     let after_calm = piles(&sim)[0].1;
     assert!((after_calm - before).abs() < 0.1, "calm wind should not erode snowdrifts: before={}, after={}", before, after_calm);
 
-    // With strong constant wind (75 px/s), drift should be eroded and shed powder
-    sim.static_wind = 75.0;
+    // With strong constant wind (160 px/s, above default 110 px/s threshold), drift peaks erode and scatter
+    sim.static_wind = 160.0;
     for _ in 0..120 {
         sim.step(1.0 / 30.0, AWAY);
     }

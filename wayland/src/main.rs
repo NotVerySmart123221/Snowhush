@@ -343,7 +343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "--help" | "-h" => {
-                println!("Snowhush for Wayland (Hyprland, Niri & generic)");
+                println!("Snowhush for Wayland (Hyprland, Sway, Niri, River, Wayfire, Labwc & generic wlr-layer-shell)");
                 println!("Usage: snowhush-wayland [OPTIONS]");
                 println!();
                 println!("Options:");

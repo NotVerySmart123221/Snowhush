@@ -1,25 +1,59 @@
 # Snowhush for Wayland
 
-Port of [Snowhush](https://snowhush.pages.dev) for Wayland compositors (Hyprland, Niri, and generic `wlr-layer-shell` compositors).
+Port of [Snowhush](https://snowhush.pages.dev) for Wayland compositors supporting `wlr-layer-shell`.
 
-## Features
-- Interactive snowfall physics and drifts settling on window tops.
-- Real-time window tracking and cursor repulsion over Hyprland Unix socket (zero process spawn overhead).
-- Fallback support for Niri and standard layer-shell compositors.
-- 100% click-through transparent overlay on Wayland overlay layer.
-- WGPU (Vulkan) hardware-accelerated rendering with sub-pixel sprite and pile shaders.
+## Supported Compositors
+Auto-detected at startup via compositor IPC environment variables:
+- **Hyprland** (`HYPRLAND_INSTANCE_SIGNATURE`): native Unix socket IPC (`j/clients`, `j/monitors`, `j/layers`, `j/cursorpos`) with per-frame window tracking, `pinned > floating > tiled` occlusion, cursor repulsion, fullscreen burst, and workspace sweep.
+- **Sway** (`SWAYSOCK`): native `i3-ipc` (`GET_TREE`) over Unix socket with zero subprocess overhead, output-local multi-monitor coordinates, `sticky > floating > tiled` occlusion, fullscreen detection, and workspace sweep.
+- **Niri** (`NIRI_SOCKET`): native JSON-line IPC (`Workspaces`, `Windows`) over Unix socket with active workspace filtering, `floating > tiled` occlusion, fullscreen detection, and workspace sweep.
+- **River / Wayfire / Labwc / generic `wlr-layer-shell`**: click-through overlay snowfall, lockscreen detection (`hyprlock`, `swaylock`, `waylock`, `gtklock`), and optional custom panel ledges via `/dev/shm/snowhush_ledges.json`.
 
-## Build and Run
+## Build and Install
 
 ```bash
 cargo build --release --manifest-path wayland/Cargo.toml
-./wayland/target/release/snowhush-wayland --snowfall steady
+install -m 755 wayland/target/release/snowhush-wayland ~/.local/bin/snowhush-wayland
+install -m 755 wayland/scripts/snowhush-toggle ~/.local/bin/snowhush-toggle
+install -m 755 wayland/scripts/snowhush-settings ~/.local/bin/snowhush-settings
+mkdir -p ~/.config/quickshell/snowhush
+cp wayland/quickshell/shell.qml ~/.config/quickshell/snowhush/shell.qml
 ```
 
-### Options
-- `-s, --snowfall <RATE>`: Snowfall intensity: `off`, `light`, `steady`, `heavy`, `variable` (default: `steady`).
+## Compositor Keybinds & Rules
 
-### Settings GUI & Controls
-Snowhush includes a Quickshell-based GUI interface in `wayland/quickshell/shell.qml` and control scripts in `wayland/scripts/`:
-- `wayland/scripts/snowhush-toggle`: Toggles the daemon on/off with rapid keypress debounce protection.
-- `wayland/scripts/snowhush-settings`: Launches the floating settings control panel.
+### Hyprland
+```conf
+layerrule = above_lock 1, match:namespace ^(snowhush)$
+windowrule = float on, center on, size 780 620, match:class .*snowhush-settings.*
+bindl = ALT, S, exec, snowhush-toggle
+bindl = CTRL ALT, S, exec, snowhush-settings
+```
+
+### Sway
+```conf
+for_window [app_id="snowhush-settings"] floating enable, resize set 780 620, move position center
+bindsym Mod1+s exec snowhush-toggle
+bindsym Control+Mod1+s exec snowhush-settings
+```
+
+### Niri
+```kdl
+window-rule {
+    match app-id="snowhush-settings"
+    open-floating true
+    default-column-width { fixed 780; }
+    default-window-height { fixed 620; }
+}
+binds {
+    Alt+S { spawn "snowhush-toggle"; }
+    Ctrl+Alt+S { spawn "snowhush-settings"; }
+}
+```
+
+### River
+```sh
+riverctl rule-add -app-id 'snowhush-settings' float
+riverctl map normal Alt S spawn snowhush-toggle
+riverctl map normal Control+Alt S spawn snowhush-settings
+```

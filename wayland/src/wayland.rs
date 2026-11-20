@@ -60,6 +60,7 @@ pub struct AppConfig {
     pub spray_force: f32,
     pub ejection_force: f32,
     pub window_wake: f32,
+    pub window_plow: f32,
     pub motion_blur: f32,
     pub no_fullscreen_snow: bool,
     pub grain_speed: f32,
@@ -92,12 +93,12 @@ impl Default for AppConfig {
             wind_accel: true,
             wind_factor: 1.0,
             workspace_sweep: 1.0,
-            wind_erosion_threshold: 55.0,
+            wind_erosion_threshold: 110.0,
             wind_erosion_rate: 1.0,
             static_wind: 0.0,
             window_leak: 0.5,
             motion_shed: 1.0,
-            shed_threshold: 450.0,
+            shed_threshold: 1500.0,
             cursor_force: 1.5,
             cloud_density: 1.0,
             cloud_amount: 1.0,
@@ -108,6 +109,7 @@ impl Default for AppConfig {
             spray_force: 1.0,
             ejection_force: 1.0,
             window_wake: 1.0,
+            window_plow: 1.0,
             motion_blur: 1.0,
             no_fullscreen_snow: true,
             grain_speed: 1.0,
@@ -185,6 +187,8 @@ pub struct JsonConfig {
     #[serde(default = "default_one")]
     pub window_wake: f32,
     #[serde(default = "default_one")]
+    pub window_plow: f32,
+    #[serde(default = "default_one")]
     pub motion_blur: f32,
     #[serde(default = "default_no_fullscreen_snow")]
     pub no_fullscreen_snow: bool,
@@ -257,7 +261,7 @@ fn default_wind_factor() -> f32 {
 }
 
 fn default_wind_erosion_threshold() -> f32 {
-    55.0
+    110.0
 }
 
 fn default_weather_mode() -> String {
@@ -273,7 +277,7 @@ fn default_window_leak() -> f32 {
 }
 
 fn default_shed_threshold() -> f32 {
-    450.0
+    1500.0
 }
 
 fn default_cursor_force() -> f32 {
@@ -333,6 +337,7 @@ impl JsonConfig {
             spray_force: cfg.spray_force,
             ejection_force: cfg.ejection_force,
             window_wake: cfg.window_wake,
+            window_plow: cfg.window_plow,
             motion_blur: cfg.motion_blur,
             no_fullscreen_snow: cfg.no_fullscreen_snow,
             grain_speed: cfg.grain_speed,
@@ -389,6 +394,7 @@ impl JsonConfig {
             spray_force: self.spray_force.clamp(0.1, 15.0),
             ejection_force: self.ejection_force.clamp(0.1, 15.0),
             window_wake: self.window_wake.clamp(0.0, 5.0),
+            window_plow: self.window_plow.clamp(0.0, 5.0),
             motion_blur: self.motion_blur.clamp(0.0, 5.0),
             no_fullscreen_snow: self.no_fullscreen_snow,
             grain_speed: self.grain_speed.clamp(0.05, 5.0),
@@ -614,6 +620,7 @@ impl SnowhushApp {
         self.simulation.spray_force = new_cfg.spray_force;
         self.simulation.ejection_force = new_cfg.ejection_force;
         self.simulation.window_wake = new_cfg.window_wake;
+        self.simulation.window_plow = new_cfg.window_plow;
         self.simulation.motion_blur = new_cfg.motion_blur;
         self.simulation.grain_speed = new_cfg.grain_speed;
         self.simulation.grain_gravity = new_cfg.grain_gravity;
